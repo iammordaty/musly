@@ -270,7 +270,6 @@ libav::decodeto_22050hz_mono_float(
 
     if (st->duration) {  // if the file length is (at least approximately) known:
         float file_length = (float)st->duration * st->time_base.num / st->time_base.den;
-        MINILOG(logDEBUG) << "Audio file length: " << file_length << " seconds";
 
         // adjust excerpt boundaries
         if ((excerpt_length <= 0) || (excerpt_length > file_length)) {
@@ -287,7 +286,9 @@ libav::decodeto_22050hz_mono_float(
             // right-align excerpt
             excerpt_start = file_length - excerpt_length;
         }
-        MINILOG(logTRACE) << "Will decode from " << excerpt_start << " to " <<
+
+        MINILOG(logDEBUG) << "Audio file length: " << file_length <<
+                " seconds. Will decode from " << excerpt_start << " to " <<
                 (excerpt_length > 0 ? (excerpt_start + excerpt_length) : file_length);
 
         // try to skip to requested position in stream

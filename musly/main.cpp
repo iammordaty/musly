@@ -189,7 +189,16 @@ tracks_add(collection_file& cf, std::string directory_or_file, std::string exten
             std::cout << "Analyzing [" << i+1 << "]: "
                     << limit_string(file, 60) << std::flush;
 #endif
-            int ret = musly_track_analyze_audiofile(mj, file.c_str(), 30, -48, mt);
+            int excerpt_length = 180;
+            int excerpt_start = -210;
+
+            int ret = musly_track_analyze_audiofile(
+                mj,
+                file.c_str(),
+                excerpt_length,
+                excerpt_start,
+                mt
+            );
 #ifdef _OPENMP
             #pragma omp critical
             {
@@ -932,4 +941,3 @@ main(int argc, char *argv[])
 
     return ret;
 }
-
