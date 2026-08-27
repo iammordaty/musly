@@ -20,6 +20,43 @@ The source code is released under the MPL 2.0 see the file <musly/COPYING>
 
 ## Version History ##
 
+### VERSION 0.3 (under development) ###
+Not released yet.
+
+This iteration focuses on more reliable analysis, a stronger default
+similarity measure, and easier builds on current toolchains:
+
+-   A new similarity method, *timbre2*, is added and becomes the default
+    when initializing a collection (`musly -N`). It extends the classic
+    timbre model with short-term temporal change (MFCC deltas), so tracks
+    that share a similar “sound” but differ in how that sound evolves are
+    easier to tell apart. The previous *timbre* and *mandelellis* methods
+    remain available via `-n`.
+-   Feature extraction for *timbre* / *timbre2* is more robust on real
+    collections: level is normalized by loudness (RMS) rather than peak
+    sample, quiet frames are ignored, long files are summarized from
+    several evenly spaced excerpts instead of a single middle slice, and
+    the Gaussian model is estimated more stably.
+-   Degenerate audio (digital silence, near-empty excerpts) and other
+    numerical edge cases no longer produce misleading “most similar”
+    results or corrupt distance rankings.
+-   The audio decoder works with current FFmpeg releases (including 7.x),
+    with more reliable seeking and decoding of the selected excerpt.
+-   A multi-stage `Dockerfile` builds and self-tests Musly on Debian 13
+    with FFmpeg 7.1, and runs a small decoder smoke test. The runtime
+    image keeps the previous container contract (SSH, `/collection` and
+    `/metadata` volumes).
+-   Collection files use a new format version. Existing `.musly`
+    collections and saved jukebox state from older builds are not
+    compatible — re-analyze the library with this release before
+    computing playlists or matrices.
+-   Self-tests cover silence and other failure modes, deterministic
+    similarity checks, and registration of all similarity methods
+    including *timbre2*.
+
+A longer analysis of the similarity pipeline is in
+`<musly/doc/similarity-pipeline-analysis.md>`.
+
 ### VERSION 0.2 (under development) ###
 Not released yet.
 
@@ -78,7 +115,23 @@ similarity measures visit <http://www.musly.org>.
 ## Installation ##
 
 Musly uses the CMake build system, and depends on Eigen 3 and ffmpeg or libav
-0.8 or above.
+0.8 or above (current FFmpeg 7.x is supported).
+
+### Docker ###
+
+To build a tested image from this source tree:
+
+```bash
+docker build -t musly:dev .
+```
+
+The image installs the `musly` client, runs the library self-test during
+the build, and exposes the same volumes and SSH entrypoint as earlier
+Musly containers (`/collection`, `/metadata`). Example:
+
+```bash
+docker run --rm musly:dev musly -i
+```
 
 ### Ubuntu prerequisites ###
 

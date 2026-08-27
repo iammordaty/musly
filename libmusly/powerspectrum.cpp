@@ -1,5 +1,6 @@
 /**
  * Copyright 2013-2014, Dominik Schnitzer <dominik@schnitzer.at>
+ *                2026, Musly maintainers
  *
  * This file is part of Musly, a program for high performance music
  * similarity computation: http://www.musly.org/.
@@ -9,6 +10,7 @@
  * with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#include <cmath>
 #include "minilog.h"
 #include "powerspectrum.h"
 
@@ -28,6 +30,15 @@ powerspectrum::powerspectrum(
     kiss_pcm = (kiss_fft_scalar*)malloc(sizeof(kiss_fft_scalar) * win_size);
     kiss_freq = (kiss_fft_cpx*)malloc(sizeof(kiss_fft_cpx) * (win_size/2 + 1));
     kiss_status = kiss_fftr_alloc(win_size, 0, NULL, NULL);
+    if (!kiss_pcm || !kiss_freq || !kiss_status) {
+        MINILOG(logERROR) << "Failed to allocate KissFFT buffers";
+        free(kiss_status);
+        free(kiss_pcm);
+        free(kiss_freq);
+        kiss_pcm = NULL;
+        kiss_freq = NULL;
+        kiss_status = NULL;
+    }
 }
 
 Eigen::MatrixXf
@@ -36,7 +47,7 @@ powerspectrum::from_pcm(const Eigen::VectorXf& pcm_samples)
     MINILOG(logTRACE) << "Powerspectrum computation. input samples="
             << pcm_samples.size();
     // check if inputs are sane
-    if ((pcm_samples.size() < win_size) || (hop_size > win_size)) {
+    if (!kiss_status || (pcm_samples.size() < win_size) || (hop_size > win_size)) {
         return Eigen::MatrixXf(0, 0);
     }
     size_t frames = (pcm_samples.size() - (win_size-hop_size)) / hop_size;
@@ -45,12 +56,20 @@ powerspectrum::from_pcm(const Eigen::VectorXf& pcm_samples)
     // initialize power spectrum
     Eigen::MatrixXf ps(freq_bins, frames);
 
-    // peak normalization value
-    float pcm_scale = std::max(fabs(pcm_samples.minCoeff()),
-            fabs(pcm_samples.maxCoeff()));
-
-    // scale signal to 96db (16bit)
-    pcm_scale =  std::pow(10.0f, 96.0f/20.0f) / pcm_scale;
+    // RMS normalization to a fixed reference level (avoids peak-driven scaling
+    // and division by zero on digital silence).
+    float energy = pcm_samples.squaredNorm();
+    float rms = std::sqrt(energy / std::max(1, (int)pcm_samples.size()));
+    if (!(rms > 0.0f) || !std::isfinite(rms)) {
+        MINILOG(logTRACE) << "Powerspectrum: silent or non-finite input";
+        return Eigen::MatrixXf(0, 0);
+    }
+    // Target RMS ≈ 0.1 (−20 dBFS); scale is applied uniformly to all frames.
+    const float target_rms = 0.1f;
+    float pcm_scale = target_rms / rms;
+    if (!std::isfinite(pcm_scale)) {
+        return Eigen::MatrixXf(0, 0);
+    }
 
     // compute the power spectrum
     for (size_t i = 0; i < frames; i++) {

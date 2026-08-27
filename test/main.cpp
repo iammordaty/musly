@@ -17,6 +17,7 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <string>
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -485,6 +486,85 @@ void test_method(std::string method) {
 }
 
 
+void test_degenerate_and_quality(std::string method) {
+    std::cout << "Testing degenerate/quality cases for \"" << method << "\"..." << std::endl;
+    musly_jukebox* box = musly_jukebox_poweron(method.c_str(), NULL);
+    REQUIRE("poweron", box != NULL);
+
+    musly_track* track = musly_track_alloc(box);
+    const int len = 22050 * 5;
+    float* pcm = new float[len];
+
+    // Digital silence → analysis must fail (no NaN features).
+    std::fill(pcm, pcm + len, 0.0f);
+    REQUIRE("silence rejected", musly_track_analyze_pcm(box, pcm, len, track) != 0);
+
+    // Input shorter than FFT window → fail.
+    REQUIRE("too short rejected", musly_track_analyze_pcm(box, pcm, 100, track) != 0);
+
+    // Constant non-zero → may fail (rank-deficient) or succeed with finite values.
+    std::fill(pcm, pcm + len, 0.25f);
+    int const_ret = musly_track_analyze_pcm(box, pcm, len, track);
+    if (const_ret == 0) {
+        for (int i = 0; i < musly_track_size(box) / (int)sizeof(float); i++) {
+            REQUIRE("constant signal finite", std::isfinite(track[i]));
+        }
+    }
+
+    // Single tone should analyze successfully with finite features.
+    for (int i = 0; i < len; i++) {
+        pcm[i] = 0.5f * std::sin(2.0f * (float)M_PI * 440.0f * i / 22050.0f);
+    }
+    REQUIRE("tone analyzed", musly_track_analyze_pcm(box, pcm, len, track) == 0);
+    for (int i = 0; i < musly_track_size(box) / (int)sizeof(float); i++) {
+        REQUIRE("tone features finite", std::isfinite(track[i]));
+    }
+
+    // setmusicstyle with a single track must fail for MP-based methods.
+    bool uses_mp = (method == "timbre" || method == "timbre2");
+    if (uses_mp) {
+        REQUIRE("setmusicstyle(1) fails",
+                musly_jukebox_setmusicstyle(box, &track, 1) != 0);
+    }
+
+    // Deterministic music: two seeds → finite non-negative similarities; self = 0.
+    musly_track* tracks[8];
+    musly_trackid ids[8];
+    for (int i = 0; i < 8; i++) {
+        tracks[i] = musly_track_alloc(box);
+        generate_music(pcm, len, 1000 + i * 17);
+        REQUIRE("generated track analyzed",
+                musly_track_analyze_pcm(box, pcm, len, tracks[i]) == 0);
+    }
+    REQUIRE("setmusicstyle(8)", musly_jukebox_setmusicstyle(box, tracks, 8) == 0);
+    REQUIRE("addtracks", musly_jukebox_addtracks(box, tracks, ids, 8, true) == 0);
+
+    float sims[8];
+    REQUIRE("similarity", musly_jukebox_similarity(box, tracks[0], ids[0],
+            tracks, ids, 8, sims) == 0);
+    for (int i = 0; i < 8; i++) {
+        REQUIRE("sim finite", std::isfinite(sims[i]));
+        REQUIRE("sim non-negative", sims[i] >= 0.0f);
+    }
+    REQUIRE("self similarity zero", sims[0] == 0.0f);
+
+    // Regression: same seed twice → identical similarity vector.
+    float sims2[8];
+    REQUIRE("similarity again", musly_jukebox_similarity(box, tracks[0], ids[0],
+            tracks, ids, 8, sims2) == 0);
+    for (int i = 0; i < 8; i++) {
+        REQUIRE("deterministic similarity", sims[i] == sims2[i]);
+    }
+
+    for (int i = 0; i < 8; i++) {
+        musly_track_free(tracks[i]);
+    }
+    musly_track_free(track);
+    delete[] pcm;
+    musly_jukebox_poweroff(box);
+}
+
+
 int main() {
     musly_debug(1);  // set verbosity level to logERROR
 
@@ -498,9 +578,13 @@ int main() {
     // Tests of the full library
     std::cout << "Methods to test: " << musly_jukebox_listmethods() << std::endl;
     std::vector<std::string> methods = split(musly_jukebox_listmethods(), ',');
+    REQUIRE("timbre2 registered",
+            std::find(methods.begin(), methods.end(), "timbre2") != methods.end());
     for (int i = 0; i < (int)methods.size(); i++) {
         test_method(methods[i]);
+        test_degenerate_and_quality(methods[i]);
     }
 
     SUMMARY();
+    return FAILED ? 1 : 0;
 }

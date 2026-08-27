@@ -1,6 +1,7 @@
 /**
  * Copyright 2013-2014, Dominik Schnitzer <dominik@schnitzer.at>
  *                2014, Jan Schlueter <jan.schlueter@ofai.at>
+ *                2026, Musly maintainers
  *
  * This file is part of Musly, a program for high performance music
  * similarity computation: http://www.musly.org/.
@@ -30,8 +31,7 @@ class timbre :
 {
 MUSLY_METHOD_REGCLASS(timbre);
 
-private:
-
+protected:
     const int sample_rate;
     const int window_size;
     const float hop;
@@ -39,6 +39,10 @@ private:
     const int ps_bins;
     const int mel_bins;
     const int mfcc_bins;
+    const bool use_deltas;
+    const int delta_width;
+    const int num_segments;
+    const int feature_dim;
 
     int track_mu;
     int track_covar;
@@ -57,6 +61,18 @@ private:
                 musly_track** tracks,
                 int length,
                 float* similarities);
+
+    Eigen::MatrixXf
+    compute_deltas(const Eigen::MatrixXf& mfcc_frames) const;
+
+    Eigen::MatrixXf
+    select_frames(const Eigen::MatrixXf& features,
+            const Eigen::MatrixXf& power_spectrum) const;
+
+    /** Construct a timbre method with optional delta features.
+     * Used by subclasses (e.g. timbre2).
+     */
+    timbre(int mfcc_bins, bool use_deltas);
 
 public:
     timbre();

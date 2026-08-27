@@ -4,11 +4,16 @@
 # (c) 2013-2014, Dominik Schnitzer <dominik@schnitzer.at>
 #          2014, Jan Schlueter <jan.schlueter@ofai.at>
 
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.10)
 
 project(musly)
-set(MUSLY_VERSION "0.2")
+set(MUSLY_VERSION "0.3")
 add_definitions(-DMUSLY_VERSION="${MUSLY_VERSION}")
+
+# Prefer C++14 (std::shuffle); C++11 remains the floor for older compilers.
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_definitions(-Wall -g)

@@ -126,21 +126,21 @@ mandelellis::similarity(
     }
 
     // map seed track to gaussian structure
-    gaussian g0;
+    gaussian g0 = {0, 0, 0, 0};
     g0.mu = &track[track_mu];
     g0.covar = &track[track_covar];
     g0.covar_inverse = &track[track_covar_inverse];
 
     // create the temporary buffer required for the Kullback-Leibler divergence
     musly_track* tmp_t = track_alloc();
-    gaussian tmp;
+    gaussian tmp = {0, 0, 0, 0};
     tmp.mu = &tmp_t[track_mu];
     tmp.covar = &tmp_t[track_covar];
     tmp.covar_inverse = &tmp_t[track_covar_inverse];
 
     // iterate over all musly_tracks to compute the Kullback-Leibler divergence
     for (int i = 0; i < length; i++) {
-        gaussian gi;
+        gaussian gi = {0, 0, 0, 0};
         musly_track* track1 = tracks[i];
         gi.mu = &track1[track_mu];
         gi.covar = &track1[track_covar];

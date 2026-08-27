@@ -1,6 +1,7 @@
 /**
  * Copyright 2013-2014, Dominik Schnitzer <dominik@schnitzer.at>
  *                2014, Jan Schlueter <jan.schlueter@ofai.at>
+ *                2026, Musly maintainers
  *
  * This file is part of Musly, a program for high performance music
  * similarity computation: http://www.musly.org/.
@@ -12,6 +13,8 @@
 
 #include <Eigen/Core>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 #include "musly/musly_types.h"
 #include "mutualproximity.h"
@@ -47,6 +50,10 @@ mutualproximity::set_normtracks(
         musly_track** tracks,
         int length)
 {
+    if (length < 2) {
+        return -1;
+    }
+
     new_cache(length);
 
     int track_size = m->track_getsize();
@@ -74,11 +81,34 @@ mutualproximity::set_normfacts(
         int position,
         Eigen::VectorXf& sim)
 {
-    double mu = sim.mean();
-    Eigen::VectorXd sim_mu = sim.cast<double>().array() - mu;
-    double std = (sim_mu.transpose() * sim_mu);
-    std /= (static_cast<double>(sim.size()) - 1.0);
-    set_normfacts(position, mu, sqrt(std));
+    // Ignore non-finite distances when estimating the reference distribution.
+    int n = 0;
+    double sum = 0.0;
+    for (int i = 0; i < (int)sim.size(); i++) {
+        if (std::isfinite(sim(i))) {
+            sum += sim(i);
+            n++;
+        }
+    }
+    if (n < 2) {
+        set_normfacts(position, 0.0f, 1.0f);
+        return;
+    }
+    double mu = sum / static_cast<double>(n);
+    double var = 0.0;
+    for (int i = 0; i < (int)sim.size(); i++) {
+        if (std::isfinite(sim(i))) {
+            double d = sim(i) - mu;
+            var += d * d;
+        }
+    }
+    var /= (static_cast<double>(n) - 1.0);
+    float stdv = static_cast<float>(std::sqrt(std::max(var, 0.0)));
+    // Floor std to avoid division by zero in normalize().
+    if (!(stdv > 0.0f) || !std::isfinite(stdv)) {
+        stdv = 1.0f;
+    }
+    set_normfacts(position, static_cast<float>(mu), stdv);
 }
 
 void
@@ -90,6 +120,12 @@ mutualproximity::set_normfacts(
     // (ideally, this has already been taken care of by append_normfacts)
     if (position >= (int)norm_facts.size()) {
         norm_facts.resize(position+1);
+    }
+    if (!(std > 0.0f) || !std::isfinite(std)) {
+        std = 1.0f;
+    }
+    if (!std::isfinite(mu)) {
+        mu = 0.0f;
     }
     norm_facts[position].mu = mu;
     norm_facts[position].std = std;
@@ -154,6 +190,9 @@ mutualproximity::normalize(
     }
     float seed_mu = norm_facts[seed_position].mu;
     float seed_std = norm_facts[seed_position].std;
+    if (!(seed_std > 0.0f)) {
+        seed_std = 1.0f;
+    }
     for (int i = 0; i < length; i++) {
         int pos = other_positions[i];
         if (pos < 0 || pos >= (int)norm_facts.size()) {
@@ -165,12 +204,17 @@ mutualproximity::normalize(
         }
 
         float d = sim[i];
-        if (std::isnan(d)) {
-           continue;
+        if (!std::isfinite(d)) {
+            sim[i] = 1.0f;
+            continue;
         }
 
+        float other_std = norm_facts[pos].std;
+        if (!(other_std > 0.0f)) {
+            other_std = 1.0f;
+        }
         double p1 = 1 - normcdf((d - seed_mu)/seed_std);
-        double p2 = 1 - normcdf((d - norm_facts[pos].mu)/norm_facts[pos].std);
+        double p2 = 1 - normcdf((d - norm_facts[pos].mu)/other_std);
         sim[i] = 1 - p1*p2;
     }
     return 0;

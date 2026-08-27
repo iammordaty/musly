@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <limits>
 #include <map>
+#include <random>
 #include <Eigen/Core>
 
 #define MUSLY_SUPPORT_STDIO
@@ -248,7 +249,8 @@ tracks_initialize(
     else {
         // use a random subset of 1000 tracks
         std::vector<musly_track*> tracks2(tracks);
-        std::random_shuffle(tracks2.begin(), tracks2.end());
+        std::mt19937 rng(42);
+        std::shuffle(tracks2.begin(), tracks2.end(), rng);
         ret = musly_jukebox_setmusicstyle(mj, tracks2.data(), 1000);
     }
     if (ret != 0) {
@@ -490,9 +492,10 @@ write_mirex_sparse(
 #endif
         // write to file
         f << tracks_files[i];
-        for (int i = 0; i < k; i++) {
-            int j = track_idx[i].first;
-            f << "\t" << tracks_files[j] << "," << track_idx[i].second;
+        int n = (int)track_idx.size();
+        for (int j = 0; j < n; j++) {
+            int tid = track_idx[j].first;
+            f << "\t" << tracks_files[tid] << "," << track_idx[j].second;
         }
         f << std::endl;
 #ifdef _OPENMP
@@ -598,7 +601,8 @@ evaluate_collection(
         // predicted genre is decided by a majority vote of its closest k
         // neighbors
         genre_hist.fill(0);
-        for (int j = 0; j < k; j++) {
+        int knn_count = (int)knn_tracks.size();
+        for (int j = 0; j < knn_count; j++) {
 
             // get the index of the j'th knn
             int knn_idx = knn_tracks[j].first;

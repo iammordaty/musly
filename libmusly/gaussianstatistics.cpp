@@ -1,5 +1,6 @@
 /**
  * Copyright 2013-2014, Dominik Schnitzer <dominik@schnitzer.at>
+ *                2026, Musly maintainers
  *
  * This file is part of Musly, a program for high performance music
  * similarity computation: http://www.musly.org/.
@@ -13,7 +14,7 @@
 #include <limits>
 #include <algorithm>
 #include <Eigen/Core>
-#include <Eigen/QR>
+#include <Eigen/Cholesky>
 #include "minilog.h"
 #include "gaussianstatistics.h"
 
@@ -61,57 +62,86 @@ gaussian_statistics::estimate_gaussian(
         return false;
     }
 
-    // always compute sample mean
-    Eigen::VectorXf mu = m.rowwise().mean();
+    // Estimate in double for numeric stability of large log-determinants.
+    Eigen::MatrixXd md = m.cast<double>();
+    Eigen::VectorXd mu = md.rowwise().mean();
     if (g.mu) {
         for (int i = 0; i < d; i++) {
-            g.mu[i] = mu(i);
+            if (!std::isfinite(mu(i))) {
+                return false;
+            }
+            g.mu[i] = static_cast<float>(mu(i));
         }
     }
 
-    // always compute sample covariance
-    Eigen::MatrixXf covar  = (m.colwise()-mu) * (m.colwise()-mu).transpose()
-            / (static_cast<float>(m.cols()) - 1.0f);
+    Eigen::MatrixXd covar = (md.colwise() - mu) * (md.colwise() - mu).transpose()
+            / (static_cast<double>(md.cols()) - 1.0);
 
-    // Add Gaussian noise to the data to avoid singular covariance matrices
-    // in case the input data was silence.
-    covar.diagonal().array() += 1e-4;
+    // Ledoit-Wolf style relative shrinkage toward scaled identity.
+    // Scale-invariant and improves conditioning with correlated MFCC frames.
+    const double lambda = 0.1;
+    double mean_var = covar.trace() / static_cast<double>(d);
+    if (!(mean_var > 0.0) || !std::isfinite(mean_var)) {
+        mean_var = 1e-6;
+    }
+    covar = (1.0 - lambda) * covar
+            + lambda * mean_var * Eigen::MatrixXd::Identity(d, d);
+
     if (g.covar) {
         int idx_ij = 0;
         for (int i = 0; i < d; i++) {
             for (int j = i; j < d; j++) {
-                g.covar[idx_ij] = covar(i, j);
+                float v = static_cast<float>(covar(i, j));
+                if (!std::isfinite(v)) {
+                    return false;
+                }
+                g.covar[idx_ij] = v;
                 idx_ij++;
             }
         }
     }
 
-    // Check if we need to set logdet or inversecovar fields of the Gaussian
     if (g.covar_inverse || g.covar_logdet) {
-        Eigen::FullPivHouseholderQR<Eigen::MatrixXf> qr =
-                covar.fullPivHouseholderQr();
-/*        if (!qr.isInvertible()) {
-            MINILOG(logDEBUG1) << "Could not compute inverse Gaussian "
-                    << "covariance matrix";
+        Eigen::LLT<Eigen::MatrixXd> llt(covar);
+        if (llt.info() != Eigen::Success) {
+            MINILOG(logDEBUG) << "Could not compute Cholesky of covariance";
             return false;
         }
-*/
+
         if (g.covar_inverse) {
-            Eigen::MatrixXf covar_inverse = qr.inverse();
+            Eigen::MatrixXd covar_inverse = llt.solve(
+                    Eigen::MatrixXd::Identity(d, d));
             int idx_ij = 0;
             for (int i = 0; i < d; i++) {
                 for (int j = i; j < d; j++) {
-                    g.covar_inverse[idx_ij] = covar_inverse(i, j);
+                    float v = static_cast<float>(covar_inverse(i, j));
+                    if (!std::isfinite(v)) {
+                        return false;
+                    }
+                    g.covar_inverse[idx_ij] = v;
                     idx_ij++;
                 }
             }
         }
 
         if (g.covar_logdet) {
-            *(g.covar_logdet) = qr.logAbsDeterminant();
+            // log|Σ| = 2 * sum(log(diag(L))) for Σ = L L^T
+            Eigen::MatrixXd L = llt.matrixL();
+            double logdet = 0.0;
+            for (int i = 0; i < d; i++) {
+                double diag = L(i, i);
+                if (!(diag > 0.0) || !std::isfinite(diag)) {
+                    return false;
+                }
+                logdet += std::log(diag);
+            }
+            logdet *= 2.0;
+            if (!std::isfinite(logdet)) {
+                return false;
+            }
+            *(g.covar_logdet) = static_cast<float>(logdet);
         }
     }
-
 
     return true;
 }
@@ -155,7 +185,8 @@ gaussian_statistics::jensenshannon(
         }
 
         if (tmp.covar[idx_ii] <= 0) {
-            return -1;
+            // Degenerate merge: treat as maximally distant (not "most similar").
+            return std::numeric_limits<float>::max();
         }
         tmp.covar[idx_ii] = std::sqrt(tmp.covar[idx_ii]);
         jsd += std::log(tmp.covar[idx_ii]);
@@ -240,7 +271,7 @@ gaussian_statistics::symmetric_kullbackleibler(
         return std::numeric_limits<float>::max();
     }
 
-    return std::max(skld/4 - d/2, 0.0f);
+    return std::max(skld/4.0f - d/2.0f, 0.0f);
 }
 
 } /* namespace musly */

@@ -38,6 +38,7 @@ add_library(libmusly
     kissfft/kiss_fftr.c
     methods/mandelellis.cpp
     methods/timbre.cpp
+    methods/timbre2.cpp
     decoders/libav.cpp
     resampler.cpp
     plugins.cpp
