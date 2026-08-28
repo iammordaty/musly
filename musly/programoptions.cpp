@@ -48,7 +48,7 @@ programoptions::programoptions(int argc, char *argv[],
     opterr = 0;
     while (1) {
 
-        int c = getopt(argc, argv, "v:ihc:Jj:a:x:Ee:f:Nn:k:ldm:s:p:o:");
+        int c = getopt(argc, argv, "v:ihc:Jj:a:x:Ee:f:Nn:k:ldm:s:p:o:r:Ry");
         if (c == -1) {
             break;
         }
@@ -66,16 +66,29 @@ programoptions::programoptions(int argc, char *argv[],
             }
             break;
 
-        // -a may be repeated to scan several locations in a single run
+        // -a and -r may be repeated to cover several locations in one run
         case 'a':
-            if ((action.length() != 0) && (action != "a")) {
+        case 'r': {
+            std::string copt;
+            copt = (char)(c);
+            if ((action.length() != 0) && (action != copt)) {
                 action = "error";
             } else {
-                action = "a";
+                action = copt;
                 if (optarg) {
-                    optionstr["a"] = optarg;
-                    optionlist["a"].push_back(optarg);
+                    optionstr[copt] = optarg;
+                    optionlist[copt].push_back(optarg);
                 }
+            }
+            break;
+        }
+
+        // -R takes no argument and must stay distinct from -r
+        case 'R':
+            if (action.length() != 0) {
+                action = "error";
+            } else {
+                action = "R";
             }
             break;
 
@@ -114,6 +127,9 @@ programoptions::programoptions(int argc, char *argv[],
             break;
         case 'J':
             optionstr["j"] = "*";
+            break;
+        case 'y':
+            optionstr["y"] = "1";
             break;
 
         // errors
@@ -222,6 +238,13 @@ cout << "  -a DIR/FILE  analyze and add the given audio FILE to the collection" 
      << "               several locations in a single run." << endl;
 cout << "  -x EXT       only analyze files with file extension EXT when adding" << endl
      << "               audio files with '-a'. DEFAULT: '' (any)" << endl;
+cout << "  -r DIR/FILE  remove the given FILE from the collection file. If a" << endl
+     << "               Directory is given, every track below it is removed." << endl
+     << "               May be repeated. Invalidates the jukebox state file." << endl;
+cout << "  -R           remove all tracks whose audio file no longer exists." << endl
+     << "               Lists the affected tracks without changing anything" << endl
+     << "               unless '-y' is given as well." << endl;
+cout << "  -y           confirm the destructive operation requested with '-R'." << endl;
 cout << "  -p FILE      print a playlist of the '-k' most similar tracks for" << endl
      << "               the given FILE. If FILE is not found in the collection" << endl
      << "               file, it is analyzed and then compared to all other" << endl

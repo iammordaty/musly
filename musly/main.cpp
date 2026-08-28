@@ -11,13 +11,17 @@
  */
 
 
+#include <sys/stat.h>
+#include <cerrno>
 #include <cstdio>
+#include <cstdint>
 #include <iostream>
 #include <fstream>
 #include <algorithm>
 #include <limits>
 #include <map>
 #include <random>
+#include <set>
 #include <Eigen/Core>
 
 #define MUSLY_SUPPORT_STDIO
@@ -116,12 +120,39 @@ read_collectionfile(
     return count;
 }
 
-bool read_jukebox(std::string &filename, musly_jukebox** jukebox, int* last_reinit) {
+/** Rolling FNV-1a hash over the first \p count collection paths. The jukebox
+ * associates its per-track data with the collection by position only, so the
+ * fingerprint is what tells a matching state file apart from one that merely
+ * happens to hold the same number of tracks. Hashing a prefix keeps the
+ * incremental update path below working.
+ */
+uint64_t paths_fingerprint(const std::vector<std::string>& files, size_t count) {
+    uint64_t hash = 14695981039346656037ULL;
+    for (size_t i = 0; (i < count) && (i < files.size()); i++) {
+        const std::string& file = files[i];
+        for (size_t k = 0; k < file.size(); k++) {
+            hash ^= (unsigned char)file[k];
+            hash *= 1099511628211ULL;
+        }
+        hash ^= (unsigned char)'\n';
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+bool read_jukebox(std::string &filename, musly_jukebox** jukebox, int* last_reinit,
+        uint64_t* fingerprint) {
     std::cout << "Reading jukebox file: " << filename << std::endl;
+    *fingerprint = 0;
     if (FILE* f = fopen(filename.c_str(), "rb")) {
         *jukebox = musly_jukebox_fromstream(f);
-        if (*jukebox && fread(last_reinit, sizeof(*last_reinit), 1, f) != 1) {
-            *last_reinit = 0;
+        if (*jukebox) {
+            if (fread(last_reinit, sizeof(*last_reinit), 1, f) != 1) {
+                *last_reinit = 0;
+            }
+            if (fread(fingerprint, sizeof(*fingerprint), 1, f) != 1) {
+                *fingerprint = 0;
+            }
         }
         fclose(f);
         return (*jukebox != NULL);
@@ -129,15 +160,129 @@ bool read_jukebox(std::string &filename, musly_jukebox** jukebox, int* last_rein
     return false;
 }
 
-bool write_jukebox(std::string &filename, musly_jukebox* jukebox, int last_reinit) {
+bool write_jukebox(std::string &filename, musly_jukebox* jukebox, int last_reinit,
+        uint64_t fingerprint) {
     std::cout << "Writing jukebox file: " << filename << std::endl;
     if (FILE* f = fopen(filename.c_str(), "wb")) {
         bool result = (musly_jukebox_tostream(jukebox, f) > 0)
-                && (fwrite(&last_reinit, sizeof(last_reinit), 1, f) == 1);
+                && (fwrite(&last_reinit, sizeof(last_reinit), 1, f) == 1)
+                && (fwrite(&fingerprint, sizeof(fingerprint), 1, f) == 1);
         fclose(f);
         return result;
     }
     return false;
+}
+
+
+/** Collapses repeated separators so paths stored before trailing slashes were
+ * normalized ("dir//file") still compare equal to their clean spelling.
+ */
+std::string collapse_slashes(const std::string& path) {
+    std::string collapsed;
+    collapsed.reserve(path.size());
+    for (size_t i = 0; i < path.size(); i++) {
+        if ((path[i] == '/') && !collapsed.empty()
+                && (collapsed[collapsed.size() - 1] == '/')) {
+            continue;
+        }
+        collapsed += path[i];
+    }
+    return collapsed;
+}
+
+std::string normalize_path(const std::string& path) {
+    std::string normalized = collapse_slashes(path);
+    while ((normalized.length() > 0)
+            && (normalized[normalized.length() - 1] == '/')) {
+        normalized.erase(normalized.length() - 1);
+    }
+    return normalized;
+}
+
+/** True if \p stored is the given target or lies below it. The separator in
+ * the prefix keeps "/music/Single" from matching "/music/Singles/...".
+ */
+bool path_matches(const std::string& stored, const std::string& target) {
+    const std::string clean = normalize_path(stored);
+    if (clean == target) {
+        return true;
+    }
+    const std::string prefix = target + "/";
+    return clean.compare(0, prefix.length(), prefix) == 0;
+}
+
+/** 0 if the path exists, 1 if it is definitely gone, -1 if we cannot tell.
+ * Only ENOENT and ENOTDIR mean "removed"; a permission or I/O error says
+ * nothing about the file and must never lead to dropping a track.
+ */
+int path_state(const std::string& path) {
+    struct stat s;
+    if (stat(path.c_str(), &s) == 0) {
+        return 0;
+    }
+    if ((errno == ENOENT) || (errno == ENOTDIR)) {
+        return 1;
+    }
+    return -1;
+}
+
+/** Reads every path in the collection, tolerating repeated entries. */
+bool collection_paths(collection_file& cf, std::vector<std::string>& files) {
+    if (!cf.open("rb")) {
+        std::cerr << "Collection file: " << cf.get_file() << " not found."
+                << std::endl;
+        return false;
+    }
+    if (!cf.read_header()) {
+        std::cerr << "Collection file: " << cf.get_file() << " invalid."
+                << std::endl;
+        return false;
+    }
+
+    std::string file;
+    std::vector<unsigned char> data;
+    while (cf.read_rawtrack(file, data) >= 0) {
+        files.push_back(file);
+    }
+    return true;
+}
+
+/** Drops the jukebox state after a removal. Track ids are collection
+ * positions, so every stored normalization factor shifts and the state can
+ * no longer be reused.
+ */
+void invalidate_jukebox(programoptions& po) {
+    std::vector<std::string> candidates;
+    const std::string configured = po.get_option_str("j");
+    if (!configured.empty()) {
+        candidates.push_back(configured);
+    }
+    const std::string conventional = po.get_option_str("c") + ".jbox";
+    if (conventional != configured) {
+        candidates.push_back(conventional);
+    }
+
+    for (int i = 0; i < (int)candidates.size(); i++) {
+        if (std::remove(candidates[i].c_str()) == 0) {
+            std::cout << "Removed jukebox state (no longer matches the "
+                    "collection): " << candidates[i] << std::endl;
+        }
+    }
+}
+
+/** Rewrites the collection and reports the outcome. */
+int apply_removal(collection_file& cf, programoptions& po,
+        const std::set<std::string>& remove) {
+    const int removed = cf.rewrite_without(remove);
+    if (removed < 0) {
+        std::cerr << "Rewriting the collection failed. The collection file "
+                "was left unchanged." << std::endl;
+        return 1;
+    }
+    std::cout << "Removed " << removed << " track(s). Previous collection "
+            "kept as: " << cf.get_file() << ".bak" << std::endl;
+    invalidate_jukebox(po);
+    return 0;
 }
 
 void
@@ -765,6 +910,97 @@ main(int argc, char *argv[])
             ret = -1;
         }
 
+    // -r: remove the given files/directories from the collection
+    } else if (po.get_action() == "r") {
+        std::vector<std::string> files;
+        if (!collection_paths(cf, files)) {
+            return 1;
+        }
+        std::cout << "Read " << files.size() << " musly tracks." << std::endl;
+
+        std::vector<std::string> targets = po.get_option_strs("r");
+        std::set<std::string> remove;
+        for (int t = 0; t < (int)targets.size(); t++) {
+            const std::string target = normalize_path(targets[t]);
+            int matched = 0;
+            for (int i = 0; i < (int)files.size(); i++) {
+                if (path_matches(files[i], target)) {
+                    remove.insert(files[i]);
+                    matched++;
+                }
+            }
+            std::cout << "Matched " << matched << " track(s): " << targets[t]
+                    << std::endl;
+        }
+
+        if (remove.empty()) {
+            std::cout << "Nothing to remove." << std::endl;
+        } else {
+            for (std::set<std::string>::const_iterator it = remove.begin();
+                    it != remove.end(); ++it) {
+                std::cout << "Removing: " << *it << std::endl;
+            }
+            ret = apply_removal(cf, po, remove);
+        }
+
+    // -R: remove tracks whose audio file is gone
+    } else if (po.get_action() == "R") {
+        std::vector<std::string> files;
+        if (!collection_paths(cf, files)) {
+            return 1;
+        }
+        std::cout << "Read " << files.size() << " musly tracks." << std::endl;
+
+        bool relative = false;
+        std::set<std::string> missing;
+        int unknown = 0;
+        for (int i = 0; i < (int)files.size(); i++) {
+            if (files[i].empty() || (files[i][0] != '/')) {
+                relative = true;
+            }
+            const int state = path_state(files[i]);
+            if (state > 0) {
+                missing.insert(files[i]);
+            } else if (state < 0) {
+                std::cout << "Cannot check, keeping: " << files[i] << std::endl;
+                unknown++;
+            }
+        }
+
+        if (relative) {
+            std::cout << "Warning: the collection contains relative paths. "
+                    "They are resolved against the current directory, so run "
+                    "this from the same place the tracks were added."
+                    << std::endl;
+        }
+        if (unknown > 0) {
+            std::cout << unknown << " track(s) could not be checked and are "
+                    "kept." << std::endl;
+        }
+
+        for (std::set<std::string>::const_iterator it = missing.begin();
+                it != missing.end(); ++it) {
+            std::cout << "Missing: " << *it << std::endl;
+        }
+        std::cout << "Found " << missing.size() << " missing track(s) out of "
+                << files.size() << "." << std::endl;
+
+        if (missing.empty()) {
+            // nothing to do
+        } else if (po.get_option_str("y") != "1") {
+            std::cout << "Nothing was changed. Repeat with '-y' to remove "
+                    "these tracks." << std::endl;
+        } else if ((files.size() >= 20) && (missing.size() * 2 > files.size())) {
+            // A disconnected volume makes every file look deleted at once.
+            std::cerr << "Refusing to remove more than half of the collection. "
+                    "Check that the music volume is mounted. To do this on "
+                    "purpose, remove the directories explicitly with '-r'."
+                    << std::endl;
+            ret = 1;
+        } else {
+            ret = apply_removal(cf, po, missing);
+        }
+
     } else {
         // For everything else, we need a filled jukebox.
         // We will read the collection file to memory and either initialize a
@@ -785,9 +1021,11 @@ main(int argc, char *argv[])
         // if a jukebox state file was given, try to read it
         std::string jukebox_file = po.get_option_str("j");
         int last_reinit = 0;
+        uint64_t stored_fingerprint = 0;
         if (!jukebox_file.empty()) {
             musly_jukebox* mj2 = NULL;
-            if (!read_jukebox(jukebox_file, &mj2, &last_reinit)) {
+            if (!read_jukebox(jukebox_file, &mj2, &last_reinit,
+                    &stored_fingerprint)) {
                 std::cout << "Reading failed.";
             }
             else if (strcmp(mj2->method_name, mj->method_name)) {
@@ -799,6 +1037,15 @@ main(int argc, char *argv[])
                 std::cout << "Jukebox file is for " << musly_jukebox_trackcount(mj2)
                         << " tracks, but collection file has " << track_count
                         << " tracks only.";
+            }
+            else if (stored_fingerprint
+                    != paths_fingerprint(tracks_files,
+                            musly_jukebox_trackcount(mj2))) {
+                // Same number of tracks does not mean the same tracks: a
+                // removal followed by an addition would otherwise apply the
+                // stored normalization factors to the wrong songs.
+                std::cout << "Jukebox file does not match the contents of the "
+                        "collection file.";
             }
             else if (track_count == musly_jukebox_trackcount(mj2)) {
                 // everything is fine, use loaded jukebox directly
@@ -825,7 +1072,8 @@ main(int argc, char *argv[])
                     musly_jukebox_poweroff(mj);
                     mj = mj2;
                     // and write updated jukebox
-                    write_jukebox(jukebox_file, mj, last_reinit);
+                    write_jukebox(jukebox_file, mj, last_reinit,
+                            paths_fingerprint(tracks_files, tracks_files.size()));
                 }
             }
             if (mj != mj2) {
@@ -846,7 +1094,8 @@ main(int argc, char *argv[])
             }
             else if (!jukebox_file.empty()) {
                 // if a jukebox state file was given, update it
-                write_jukebox(jukebox_file, mj, track_count);
+                write_jukebox(jukebox_file, mj, track_count,
+                        paths_fingerprint(tracks_files, tracks_files.size()));
             }
         }
 

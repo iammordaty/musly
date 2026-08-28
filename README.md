@@ -44,6 +44,16 @@ similarity measure, and easier builds on current toolchains:
     results or corrupt distance rankings.
 -   The audio decoder works with current FFmpeg releases (including 7.x),
     with more reliable seeking and decoding of the selected excerpt.
+-   Collections can be maintained without rebuilding them from scratch:
+    `-a` may be given several times to scan several locations in one run,
+    `-r DIR/FILE` removes a track or a whole directory from the collection,
+    and `-R` removes the tracks whose audio file has disappeared (listing
+    them first, and only applying the change when `-y` is added). Trailing
+    slashes in scan and removal paths no longer produce duplicate-looking
+    entries.
+-   Saved jukebox state now records which tracks it was built for, so a
+    state file that no longer matches the collection is rebuilt instead of
+    being applied to the wrong tracks.
 -   A multi-stage `Dockerfile` builds and self-tests Musly on Debian 13
     with FFmpeg 7.1, and runs a small decoder smoke test. The runtime
     image keeps the previous container contract (SSH, `/collection` and
@@ -202,6 +212,9 @@ The command line interface is able to:
   (see <musly/doc/MIREX-DistanceMatrix.md>)
 * Additionally the music similarity features can be ouput in text format
   to ease reuse of the features.
+* Maintain an existing collection: add further directories with `-a`,
+  remove tracks or directories with `-r`, and drop entries whose audio
+  file is gone with `-R -y`.
   
 The command line tool is called "musly". Use "musly -h" to read about all
 available options. See <http://www.musly.org> for more information.

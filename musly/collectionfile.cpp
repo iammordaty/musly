@@ -170,6 +170,111 @@ collection_file::read_track(
     return sz;
 }
 
+int
+collection_file::read_rawtrack(
+        std::string& file,
+        std::vector<unsigned char>& data)
+{
+    fpos_t pos;
+    if (fgetpos(fid, &pos) != 0) {
+        return -1;
+    }
+
+    file = freadstr(fid, 4096);
+    if (file.length() == 0) {
+        fsetpos(fid, &pos);
+        return -1;
+    }
+
+    uint32_t sz;
+    if (fread(&sz, sizeof(uint32_t), 1, fid) != 1) {
+        fsetpos(fid, &pos);
+        return -1;
+    }
+
+    data.resize(sz);
+    if ((sz > 0) && (fread(data.data(), sizeof(unsigned char), sz, fid) != sz)) {
+        fsetpos(fid, &pos);
+        return -1;
+    }
+
+    return (int)sz;
+}
+
+
+int
+collection_file::rewrite_without(
+        const std::set<std::string>& remove)
+{
+    if (!open("rb")) {
+        return -1;
+    }
+
+    // Copy the header verbatim, but only after validating it: rewriting a
+    // file we cannot parse would destroy it.
+    std::string headerstring = freadstr(fid, 255);
+    std::vector<std::string> headersplit = split(headerstring, '-');
+    if ((headersplit.size() != 3) || (headersplit[0] != header)
+            || (headersplit[1] != version)) {
+        return -1;
+    }
+
+    const std::string tmpname = coll + ".tmp";
+    FILE* out = fopen(tmpname.c_str(), "wb");
+    if (!out) {
+        return -1;
+    }
+    fwritestr(out, headerstring);
+
+    int removed = 0;
+    bool failed = false;
+    std::string file;
+    std::vector<unsigned char> data;
+    int sz;
+    while ((sz = read_rawtrack(file, data)) >= 0) {
+        if (remove.find(file) != remove.end()) {
+            removed++;
+            continue;
+        }
+
+        uint32_t usz = (uint32_t)sz;
+        if ((fwritestr(out, file) < 0)
+                || (fwrite(&usz, sizeof(uint32_t), 1, out) != 1)
+                || ((sz > 0) && (fwrite(data.data(), sz, 1, out) != 1))) {
+            failed = true;
+            break;
+        }
+    }
+
+    fclose(out);
+    fclose(fid);
+    fid = 0;
+
+    if (failed) {
+        std::remove(tmpname.c_str());
+        return -1;
+    }
+
+    // Swap the files through rename() so an interrupted run cannot leave a
+    // truncated collection behind.
+    const std::string bakname = coll + ".bak";
+    std::remove(bakname.c_str());
+    if (std::rename(coll.c_str(), bakname.c_str()) != 0) {
+        std::remove(tmpname.c_str());
+        return -1;
+    }
+    if (std::rename(tmpname.c_str(), coll.c_str()) != 0) {
+        std::rename(bakname.c_str(), coll.c_str());
+        std::remove(tmpname.c_str());
+        return -1;
+    }
+
+    filemap.clear();
+
+    return removed;
+}
+
+
 bool
 collection_file::append_track(
         const std::string& filename,

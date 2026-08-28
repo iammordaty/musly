@@ -71,4 +71,82 @@ grep -q "b1.wav" multi.txt
 # A trailing slash on the scan root must not leak into the stored paths.
 ! grep "track-origin" multi.txt | grep -q "//"
 
+track_count() {
+    musly -c "$1" -l | awk '/track-origin:/{n++} END{print n+0}'
+}
+
+echo "=== Removing tracks (-r) ==="
+ROOT="$PWD/rmtest"
+rm -rf "$ROOT" rm.musly rm.musly.bak rm.musly.jbox saved.jbox
+mkdir -p "$ROOT/keep" "$ROOT/drop" "$ROOT/extra"
+cp tone.wav "$ROOT/keep/k1.wav"
+cp noise.wav "$ROOT/keep/k2.wav"
+cp stereo.wav "$ROOT/drop/d1.wav"
+cp lowrate.wav "$ROOT/drop/d2.wav"
+cp tone.wav "$ROOT/extra/e1.wav"
+cp noise.wav "$ROOT/extra/e2.wav"
+musly -N -c rm.musly
+musly -c rm.musly -a "$ROOT/keep" -a "$ROOT/drop" -x wav
+test "$(track_count rm.musly)" = "4"
+
+# build a jukebox state so we can check it gets invalidated
+musly -c rm.musly -J -k 2 -p "$ROOT/keep/k1.wav" > /dev/null
+test -f rm.musly.jbox
+cp rm.musly.jbox saved.jbox
+
+musly -c rm.musly -r "$ROOT/drop" | tee rm1.txt
+grep -q "Matched 2 track(s)" rm1.txt
+test "$(track_count rm.musly)" = "2"
+# the previous collection is preserved
+test "$(track_count rm.musly.bak)" = "4"
+# stale jukebox state must not survive a removal
+test ! -f rm.musly.jbox
+
+# a target that matches nothing changes nothing
+musly -c rm.musly -r "$ROOT/nope" | tee rm2.txt
+grep -q "Matched 0 track(s)" rm2.txt
+grep -q "Nothing to remove" rm2.txt
+test "$(track_count rm.musly)" = "2"
+
+echo "=== Jukebox fingerprint guard ==="
+# Restore a jukebox built for 4 different tracks, then bring the collection
+# back to 4 tracks. The counts match, the contents do not.
+musly -c rm.musly -a "$ROOT/extra" -x wav > /dev/null
+test "$(track_count rm.musly)" = "4"
+cp saved.jbox rm.musly.jbox
+musly -c rm.musly -J -k 2 -p "$ROOT/keep/k1.wav" | tee fp.txt
+grep -q "does not match the contents" fp.txt
+
+echo "=== Removing stale entries (-R) ==="
+rm -f stale.musly stale.musly.bak
+musly -N -c stale.musly
+musly -c stale.musly -a "$ROOT" -x wav > /dev/null
+test "$(track_count stale.musly)" = "6"
+rm -f "$ROOT/drop/d2.wav"
+# without -y nothing may change
+musly -c stale.musly -R | tee stale1.txt
+grep -q "Missing:.*d2.wav" stale1.txt
+grep -q "Repeat with '-y'" stale1.txt
+test "$(track_count stale.musly)" = "6"
+musly -c stale.musly -R -y > /dev/null
+test "$(track_count stale.musly)" = "5"
+
+echo "=== Mass deletion guard ==="
+GUARD="$PWD/guardtest"
+rm -rf "$GUARD" guard.musly guard.musly.bak
+mkdir -p "$GUARD"
+for i in $(seq 1 24); do cp tone.wav "$GUARD/g$i.wav"; done
+musly -N -c guard.musly
+musly -c guard.musly -a "$GUARD" -x wav > /dev/null
+test "$(track_count guard.musly)" = "24"
+# simulate an unmounted volume: most files disappear at once
+for i in $(seq 1 20); do rm -f "$GUARD/g$i.wav"; done
+set +e
+musly -c guard.musly -R -y > guard.txt 2>&1
+GUARD_RET=$?
+set -e
+test "$GUARD_RET" != "0"
+grep -q "Refusing to remove more than half" guard.txt
+test "$(track_count guard.musly)" = "24"
+
 echo "=== Decoder tests OK ==="

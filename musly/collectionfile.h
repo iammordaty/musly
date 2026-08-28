@@ -13,6 +13,8 @@
 
 #include <string>
 #include <map>
+#include <set>
+#include <vector>
 
 class collection_file {
 private:
@@ -58,6 +60,23 @@ public:
             unsigned char* buffer,
             int buffersize,
             std::string& file);
+
+    /** Reads the next record without consulting the duplicate map, so a
+     * collection containing repeated paths can be traversed completely.
+     * Returns the payload size, or -1 at the end of the file or on error.
+     */
+    int
+    read_rawtrack(
+            std::string& file,
+            std::vector<unsigned char>& data);
+
+    /** Rewrites the collection without the records whose path is listed in
+     * \p remove, keeping the previous file as '.bak'. Returns the number of
+     * removed records, or -1 on error.
+     */
+    int
+    rewrite_without(
+            const std::set<std::string>& remove);
 
     bool
     contains_track(const std::string& trackfile);
