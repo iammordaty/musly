@@ -66,9 +66,21 @@ programoptions::programoptions(int argc, char *argv[],
             }
             break;
 
+        // -a may be repeated to scan several locations in a single run
+        case 'a':
+            if ((action.length() != 0) && (action != "a")) {
+                action = "error";
+            } else {
+                action = "a";
+                if (optarg) {
+                    optionstr["a"] = optarg;
+                    optionlist["a"].push_back(optarg);
+                }
+            }
+            break;
+
         case 'i':
         case 'h':
-        case 'a':
         case 'n':
         case 'e':
         case 'l':
@@ -146,6 +158,21 @@ programoptions::get_option_str(
     return "";
 }
 
+std::vector<std::string>
+programoptions::get_option_strs(
+        const std::string& option)
+{
+    if (optionlist.find(option) != optionlist.end()) {
+        return optionlist[option];
+    }
+
+    std::vector<std::string> values;
+    if (!get_option_str(option).empty()) {
+        values.push_back(get_option_str(option));
+    }
+    return values;
+}
+
 int
 programoptions::get_option_int(
         const std::string& option)
@@ -191,7 +218,8 @@ cout << "  -n MTH | -N  initialize the collection (set with '-c') using the" << 
 cout << " MUSIC ANALYSIS/PLAYLIST GENERATION:" << endl;
 cout << "  -a DIR/FILE  analyze and add the given audio FILE to the collection" << endl
      << "               file. If a Directory is given, the directory is scanned" << endl
-     << "               recursively for audio files." << endl;
+     << "               recursively for audio files. May be repeated to scan" << endl
+     << "               several locations in a single run." << endl;
 cout << "  -x EXT       only analyze files with file extension EXT when adding" << endl
      << "               audio files with '-a'. DEFAULT: '' (any)" << endl;
 cout << "  -p FILE      print a playlist of the '-k' most similar tracks for" << endl

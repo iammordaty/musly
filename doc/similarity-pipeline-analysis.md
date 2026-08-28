@@ -73,7 +73,11 @@ available as the baseline variant without Mutual Proximity.
 ### Stage 3 — feature quality
 - RMS normalization, log floor at −80 dB
 - Silence-frame rejection (−60 dB relative to P95)
-- Several evenly spaced segments instead of a single center crop
+- Analysis restricted to the centered 60% of the signal, so intros and outros
+  are dropped proportionally to the track length and different edits of the
+  same track stay structurally aligned
+- Several evenly spaced segments within that region instead of a single
+  center crop spanning the whole recording
 - Ledoit–Wolf shrinkage, estimation in `double`
 - Collection / `MUSLY_VERSION` bump (requires re-analysis)
 

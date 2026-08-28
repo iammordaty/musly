@@ -50,6 +50,9 @@ timbre::timbre(int mfcc_bins_, bool use_deltas_) :
         delta_width(2),
         num_segments(3),
         feature_dim(use_deltas_ ? mfcc_bins_ * 2 : mfcc_bins_),
+        focus_fraction(0.6f),
+        min_analysis_length(window_size
+                + (feature_dim + 1) * (int)(window_size * hop)),
 
         // spectra and filters
         ps(windowfunction::hann(window_size), hop),
@@ -170,6 +173,17 @@ timbre::analyze_track(
     if (length < window_size) {
         MINILOG(logTRACE) << "T analysis failed: input too short.";
         return 2;
+    }
+
+    // Restrict the analysis to the centered part of the signal. Intros and
+    // outros are rarely representative — extended electronic mixes routinely
+    // open and close with beats only. Scaling with the signal length keeps
+    // different edits of the same track structurally aligned.
+    int focus_length = (int)(length * focus_fraction);
+    if ((focus_length >= min_analysis_length) && (focus_length < length)) {
+        pcm += (length - focus_length) / 2;
+        length = focus_length;
+        MINILOG(logTRACE) << "T focusing on centered part. samples=" << length;
     }
 
     // Collect frames from several evenly spaced segments for long signals.

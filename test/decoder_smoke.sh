@@ -53,4 +53,22 @@ echo "=== Sparse similarity matrix ==="
 musly -c collection.musly -k 3 -s sparse.txt
 test -s sparse.txt
 
+echo "=== Multiple -a, trailing slash, UTF-8 paths ==="
+LONGDIR="setB/zażółć gęślą jaźń — zażółć gęślą jaźń — zażółć gęślą jaźń"
+rm -rf setA setB multi.musly
+mkdir -p setA "$LONGDIR"
+cp tone.wav setA/a1.wav
+cp noise.wav "$LONGDIR/b1.wav"
+musly -N -c multi.musly
+# Both roots in a single invocation; the first one spelled with a trailing slash.
+musly -c multi.musly -a setA/ -a setB -x wav | tee analyze.txt
+grep -q "\[OK\]" analyze.txt
+# The truncated progress output must remain decodable.
+iconv -f utf-8 -t utf-8 analyze.txt > /dev/null
+musly -c multi.musly -l | tee multi.txt
+grep -q "setA/a1.wav" multi.txt
+grep -q "b1.wav" multi.txt
+# A trailing slash on the scan root must not leak into the stored paths.
+! grep "track-origin" multi.txt | grep -q "//"
+
 echo "=== Decoder tests OK ==="

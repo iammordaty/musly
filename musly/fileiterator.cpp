@@ -30,6 +30,15 @@ fileiterator::fileiterator(const std::string& path,
 {
     current_dir = path;
 
+    // Strip trailing separators. They would otherwise end up in every entry
+    // built below as "dir//entry", making the same file look like two
+    // different tracks depending on how the scan root was spelled.
+    // "/" collapses to "", which still joins to a correct absolute path.
+    while ((current_dir.length() > 0) &&
+            (current_dir[current_dir.length() - 1] == '/')) {
+        current_dir.erase(current_dir.length() - 1);
+    }
+
     // set scan extension
     if (extension.length() > 0) {
         search_ext = "." + extension;

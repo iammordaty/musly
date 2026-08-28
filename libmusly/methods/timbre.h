@@ -43,6 +43,8 @@ protected:
     const int delta_width;
     const int num_segments;
     const int feature_dim;
+    const float focus_fraction;
+    const int min_analysis_length;
 
     int track_mu;
     int track_covar;

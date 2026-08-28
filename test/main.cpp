@@ -214,6 +214,62 @@ void test_findmin() {
 }
 
 
+bool valid_utf8(const std::string& s) {
+    size_t i = 0;
+    while (i < s.size()) {
+        unsigned char c = (unsigned char)s[i];
+        size_t extra;
+        if (c < 0x80) {
+            extra = 0;
+        } else if ((c & 0xE0) == 0xC0) {
+            extra = 1;
+        } else if ((c & 0xF0) == 0xE0) {
+            extra = 2;
+        } else if ((c & 0xF8) == 0xF0) {
+            extra = 3;
+        } else {
+            return false;
+        }
+        if (i + extra >= s.size() && extra > 0) {
+            return false;
+        }
+        for (size_t k = 1; k <= extra; k++) {
+            if ((((unsigned char)s[i + k]) & 0xC0) != 0x80) {
+                return false;
+            }
+        }
+        i += extra + 1;
+    }
+    return true;
+}
+
+
+void test_limit_string() {
+    std::cout << "Testing component \"limit_string\"..." << std::endl;
+
+    // Plain ASCII keeps the previous behaviour.
+    REQUIRE("shorter kept", limit_string("abcdef", 10) == "abcdef");
+    REQUIRE("exact fit kept", limit_string("abcdef", 6) == "abcdef");
+    REQUIRE("ascii truncated", limit_string("abcdefghij", 6) == "..ghij");
+    REQUIRE("maxsize 0", limit_string("abc", 0) == "");
+    REQUIRE("maxsize 1", limit_string("abc", 1) == ".");
+    REQUIRE("maxsize 2", limit_string("abc", 2) == "..");
+
+    // "ą" occupies two bytes: the limit counts characters, not bytes.
+    const std::string a = "\xc4\x85";
+    const std::string four = a + a + a + a;
+    REQUIRE("utf8 measured in characters", limit_string(four, 4) == four);
+    REQUIRE("utf8 cut on boundary", limit_string(four, 3) == ".." + a);
+
+    // Truncating at any limit must leave a decodable string.
+    const std::string path =
+            "/collection/Other/2019/03. marzec/zażółć gęślą jaźń/Pryda/Nito.mp3";
+    for (int n = 0; n <= (int)path.size() + 2; n++) {
+        REQUIRE("truncated path is valid utf8", valid_utf8(limit_string(path, n)));
+    }
+}
+
+
 void generate_music(float* out, int length, unsigned int seed = 0) {
     if (!seed) {
         seed = time(NULL);
@@ -565,14 +621,70 @@ void test_degenerate_and_quality(std::string method) {
 }
 
 
+void test_excerpt_focus(std::string method) {
+    // Only the timbre family restricts the analysis to the centered part;
+    // mandelellis is kept as the unmodified baseline.
+    if ((method != "timbre") && (method != "timbre2")) {
+        return;
+    }
+    std::cout << "Testing excerpt focus for \"" << method << "\"..." << std::endl;
+    musly_jukebox* box = musly_jukebox_poweron(method.c_str(), NULL);
+    REQUIRE("poweron", box != NULL);
+
+    // Both signals share an identical centered core and differ completely in
+    // the intro and outro. The core is slightly wider than the analyzed 60%
+    // so the comparison does not depend on rounding of the window bounds.
+    const int len = 22050 * 30;
+    const int core_len = (int)(len * 0.62f);
+    const int core_start = (len - core_len) / 2;
+
+    float* core = new float[core_len];
+    generate_music(core, core_len, 4711);
+
+    float* a = new float[len];
+    float* b = new float[len];
+    for (int i = 0; i < len; i++) {
+        float t = 2.0f * (float)M_PI * i / 22050.0f;
+        a[i] = 0.9f * std::sin(t * 55.0f);
+        b[i] = 0.9f * std::sin(t * 7000.0f);
+    }
+    std::copy(core, core + core_len, a + core_start);
+    std::copy(core, core + core_len, b + core_start);
+
+    musly_track* ta = musly_track_alloc(box);
+    musly_track* tb = musly_track_alloc(box);
+    REQUIRE("intro/outro variant a analyzed",
+            musly_track_analyze_pcm(box, a, len, ta) == 0);
+    REQUIRE("intro/outro variant b analyzed",
+            musly_track_analyze_pcm(box, b, len, tb) == 0);
+
+    const int dim = musly_track_size(box) / (int)sizeof(float);
+    bool same_model = true;
+    for (int i = 0; i < dim; i++) {
+        if (std::abs(ta[i] - tb[i]) > 1e-3f * (1.0f + std::abs(ta[i]))) {
+            same_model = false;
+        }
+    }
+    REQUIRE("intro and outro ignored", same_model);
+
+    musly_track_free(ta);
+    musly_track_free(tb);
+    delete[] a;
+    delete[] b;
+    delete[] core;
+    musly_jukebox_poweroff(box);
+}
+
+
 int main() {
     musly_debug(1);  // set verbosity level to logERROR
 
     // Unit tests
-    std::cout << "Components to test: unordered_idpool,ordered_idpool,findmin" << std::endl;
+    std::cout << "Components to test: unordered_idpool,ordered_idpool,findmin,limit_string" << std::endl;
     test_unordered_idpool();
     test_ordered_idpool();
     test_findmin();
+    test_limit_string();
     std::cout << std::endl;
 
     // Tests of the full library
@@ -583,6 +695,7 @@ int main() {
     for (int i = 0; i < (int)methods.size(); i++) {
         test_method(methods[i]);
         test_degenerate_and_quality(methods[i]);
+        test_excerpt_focus(methods[i]);
     }
 
     SUMMARY();

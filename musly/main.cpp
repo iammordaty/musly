@@ -190,8 +190,11 @@ tracks_add(collection_file& cf, std::string directory_or_file, std::string exten
             std::cout << "Analyzing [" << i+1 << "]: "
                     << limit_string(file, 60) << std::flush;
 #endif
-            int excerpt_length = 180;
-            int excerpt_start = -210;
+            // Decode a generous centered window; timbre/timbre2 narrow it
+            // down to its centered 60%, which lands on 180 seconds for
+            // anything longer than five minutes.
+            int excerpt_length = 300;
+            int excerpt_start = -600;
 
             int ret = musly_track_analyze_audiofile(
                 mj,
@@ -741,7 +744,10 @@ main(int argc, char *argv[])
         std::cout << "Read " << track_count << " musly tracks." << std::endl;
 
         // search for new files, analyze and add them
-        tracks_add(cf, po.get_option_str("a"), po.get_option_str("x"));
+        std::vector<std::string> add_paths = po.get_option_strs("a");
+        for (int i = 0; i < (int)add_paths.size(); i++) {
+            tracks_add(cf, add_paths[i], po.get_option_str("x"));
+        }
 
     // -l: list files in collection file
     } else if (po.get_action() == "l") {

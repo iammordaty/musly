@@ -34,9 +34,11 @@ similarity measure, and easier builds on current toolchains:
     remain available via `-n`.
 -   Feature extraction for *timbre* / *timbre2* is more robust on real
     collections: level is normalized by loudness (RMS) rather than peak
-    sample, quiet frames are ignored, long files are summarized from
-    several evenly spaced excerpts instead of a single middle slice, and
-    the Gaussian model is estimated more stably.
+    sample, quiet frames are ignored, the analysis is restricted to the
+    centered 60% of the signal so intros and outros are skipped in
+    proportion to the track length, long inputs are summarized from
+    several evenly spaced excerpts within that region, and the Gaussian
+    model is estimated more stably.
 -   Degenerate audio (digital silence, near-empty excerpts) and other
     numerical edge cases no longer produce misleading “most similar”
     results or corrupt distance rankings.
