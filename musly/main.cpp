@@ -387,19 +387,28 @@ tracks_initialize(
 {
     std::vector<musly_trackid> trackids(tracks.size(), -1);
 
-    // initialize the jukebox music style
+    // Initialize the jukebox music style. Mutual Proximity calibrates every
+    // track against this reference set, so one that misrepresents the
+    // collection distorts the distance scale; see
+    // doc/similarity-pipeline-analysis.md. Using the whole collection removes
+    // that risk entirely, at the price of tracks * reference distance
+    // evaluations during registration (roughly 7 us each, single threaded):
+    // about 3.5 minutes for 5000 tracks and 8 minutes at the limit below.
+    // Beyond it, fall back to a sample drawn from the entire collection.
+    const int max_reference_tracks = 8000;
+    const int sampled_reference_tracks = 1000;
+
     int ret;
-    if (trackids.size() <= 1000) {
-        // use all available tracks
+    if ((int)tracks.size() <= max_reference_tracks) {
         ret = musly_jukebox_setmusicstyle(mj, tracks.data(),
                 tracks.size());
     }
     else {
-        // use a random subset of 1000 tracks
         std::vector<musly_track*> tracks2(tracks);
         std::mt19937 rng(42);
         std::shuffle(tracks2.begin(), tracks2.end(), rng);
-        ret = musly_jukebox_setmusicstyle(mj, tracks2.data(), 1000);
+        ret = musly_jukebox_setmusicstyle(mj, tracks2.data(),
+                sampled_reference_tracks);
     }
     if (ret != 0) {
         return false;

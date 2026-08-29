@@ -54,6 +54,12 @@ similarity measure, and easier builds on current toolchains:
 -   Saved jukebox state now records which tracks it was built for, so a
     state file that no longer matches the collection is rebuilt instead of
     being applied to the wrong tracks.
+-   The reference set used to normalize distances (Mutual Proximity) is now
+    the whole collection for libraries up to 8000 tracks, instead of a
+    sample of 1000. This removes the dependency on which tracks happen to
+    be sampled, at the cost of a slower one-off jukebox initialization
+    (about 3.5 minutes for 5000 tracks). Larger collections keep using a
+    sample drawn from the entire collection.
 -   A multi-stage `Dockerfile` builds and self-tests Musly on Debian 13
     with FFmpeg 7.1, and runs a small decoder smoke test. The runtime
     image keeps the previous container contract (SSH, `/collection` and

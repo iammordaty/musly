@@ -15,3 +15,12 @@ target_link_libraries(selftest
     libmusly)
 
 add_test(NAME selftest COMMAND selftest)
+
+# Diagnostic tool, not a pass/fail test: it reports numbers to interpret and
+# takes far too long for the regular test run. Deliberately not registered
+# with add_test(); run it by hand when touching the reference set policy.
+add_executable(reference_set_experiment
+    reference_set_experiment.cpp)
+
+target_link_libraries(reference_set_experiment
+    libmusly)

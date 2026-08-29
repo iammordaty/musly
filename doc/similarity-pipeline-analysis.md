@@ -84,11 +84,71 @@ available as the baseline variant without Mutual Proximity.
 ### Stage 4 — `timbre2`
 - Parameterized `timbre` plus MFCC-delta method (±2 frame window), priority 2
 
+### Stage 5 — Mutual Proximity reference set
+- The whole collection is used as the reference set up to 8000 tracks; beyond
+  that a sample of 1000 drawn from the entire collection (`tracks_initialize`)
+- Saved jukebox state records a fingerprint of the collection paths, so a
+  state file whose reference set no longer matches is rebuilt instead of being
+  applied to the wrong tracks
+
+## Mutual Proximity reference set
+
+`musly_jukebox_setmusicstyle()` does not take part in the distance between two
+tracks. It fixes, per track, the mean and standard deviation of that track’s
+distances to a reference sample, which `normalize()` then turns into
+`1 − p1·p2`. The reference set is a measuring stick, not a term of the
+measurement, which bounds the damage a bad one can do.
+
+`test/reference_set_experiment` quantifies that damage on a synthetic
+collection of 900 tracks in three disjoint frequency bands (“genres”),
+comparing the whole collection against a uniform sample and against a sample
+drawn from a single genre.
+
+| Reference set | Mean distance within g1 | Spread within g1 | Top-10 agreement with full |
+|---------------|-------------------------|------------------|----------------------------|
+| whole collection (900) | 0.1914 | 0.097 | — |
+| uniform sample (200) | 0.2219 | 0.102 | 0.918 |
+| single genre (200) | 0.0001 | 0.005 | 0.339 |
+
+Three observations:
+
+- **Genre structure is robust.** Even with the worst reference set, the
+  cross-genre share of the top-10 stayed at 0.000 and k-occurrence stayed
+  neutral (10.00 per genre). A skewed reference set does not flood playlists
+  with the wrong music.
+- **Within-genre resolution is not.** For a genre absent from the reference
+  set, distances collapsed to ~1e-4 with a spread of 5e-3: the score
+  saturates and two or three significant digits are left to order hundreds of
+  tracks. This is the same mechanism that produces distances printed in
+  scientific notation. Top-10 agreement with the exact answer drops to 0.339.
+- **Size is not the issue, representativeness is.** 200 of 900 (22%) already
+  reproduces the full reference set to within 0.918 agreement. Raising the
+  sample size barely helps, because the sampling error of the mean at n=1000
+  is already ~3% of the standard deviation.
+
+The caveat is that the synthetic genres are separated far more cleanly than
+real ones, so cross-genre robustness would be weaker on an actual collection,
+and the single-genre variant is a worst case rather than a realistic skew.
+
+Note that with a saved jukebox state the reference set is the collection as of
+the last full initialization, not necessarily the current one: tracks appended
+through the incremental update path are calibrated against the stored
+reference set. The existing rule that rebuilds the jukebox once the collection
+has grown by more than 10% keeps that gap bounded.
+
+Registration costs `tracks × reference` distance evaluations at ~7.2 µs each,
+single threaded (`timbre::add_tracks` is not parallelized): about 40 s for
+5000 tracks against a sample of 1000, about 3.5 minutes against the whole
+collection, and about 8 minutes at the 8000-track limit. The reference tracks
+are copied into the jukebox and into its state file, which grows accordingly
+(~5.3 kB per track).
+
 ## Quality evaluation protocol
 
 1. **Self-test in the container** — `docker build` runs `ctest` (degenerate cases + numerical regression).
 2. **Decoder path** — files generated with `ffmpeg` (tone, noise, stereo, silence, antiphase, 8 kHz, corrupted) → `musly -n/-a/-p/-m` (`test/decoder_smoke.sh`).
 3. **kNN ablation** — `musly -E` with an artist filter on a genre-labeled collection ([MIREX / musly.org protocol](https://www.musly.org/methods.html)).
+4. **Reference set sensitivity** — `test/reference_set_experiment` when changing the reference set policy or the MP normalization.
 4. **Acceptance gates**
    - Stage 0: no change in results for valid audio
    - Stage 2: changes only at `float` precision
