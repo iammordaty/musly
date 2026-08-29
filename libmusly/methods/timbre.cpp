@@ -297,14 +297,15 @@ timbre::similarity_raw(
     g0.covar = &track[track_covar];
     g0.covar_logdet = &track[track_logdet];
 
-    // create the temporary buffer required for the Jensen-Shannon divergence
+    // Temporary buffer for the Jensen-Shannon merge; allocated once per call
+    // so callers that loop over many seeds (e.g. add_tracks, -s) do not pay
+    // for a fresh allocation on every pairwise distance.
     musly_track* tmp_t = track_alloc();
     gaussian tmp = {0, 0, 0, 0};
     tmp.mu = &tmp_t[track_mu];
     tmp.covar = &tmp_t[track_covar];
     tmp.covar_logdet = &tmp_t[track_logdet];
 
-    // iterate over all musly_tracks to compute the Jensen-Shannon divergence
     for (int i = 0; i < length; i++) {
         gaussian gi = {0, 0, 0, 0};
         musly_track* track1 = tracks[i];
@@ -379,14 +380,25 @@ timbre::add_tracks(
         num_new = idpool.add_ids(trackids, length);
     }
 
-    Eigen::VectorXf sim(mp.get_normtracks()->size());
+    // Pre-allocate so the parallel loop only writes into disjoint slots and
+    // never resizes the shared vector.
     mp.append_normfacts(num_new);
-    int pos = idpool.get_size() - length;
-    for (int i = 0; i < length; i++) {
-        similarity_raw(tracks[i], mp.get_normtracks()->data(),
-                mp.get_normtracks()->size(), sim.data());
+    const int pos = idpool.get_size() - length;
+    const int ref_size = (int)mp.get_normtracks()->size();
+    musly_track** ref_tracks = mp.get_normtracks()->data();
 
-        mp.set_normfacts(pos + i, sim);
+#ifdef _OPENMP
+    #pragma omp parallel if (length > 1)
+#endif
+    {
+        Eigen::VectorXf sim(ref_size);
+#ifdef _OPENMP
+        #pragma omp for schedule(static)
+#endif
+        for (int i = 0; i < length; i++) {
+            similarity_raw(tracks[i], ref_tracks, ref_size, sim.data());
+            mp.set_normfacts(pos + i, sim);
+        }
     }
     return 0;
 }
@@ -475,6 +487,20 @@ timbre::deserialize_metadata(
     delete[] mptracks;
     mp.append_normfacts(expected_tracks);
 
+    return expected_tracks;
+}
+
+int
+timbre::deserialize_metadata_lean(
+        int expected_tracks,
+        musly_trackid max_seen) {
+    // Restore id bookkeeping and room for the per-track mu/std factors, but
+    // leave the Mutual Proximity reference set empty. Similarity queries only
+    // need the factors; add_tracks will refuse to run until set_musicstyle
+    // is called again.
+    idpool.add_ids(&max_seen, 1);
+    idpool.remove_ids(&max_seen, 1);
+    mp.append_normfacts(expected_tracks);
     return expected_tracks;
 }
 

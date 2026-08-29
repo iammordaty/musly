@@ -57,9 +57,15 @@ similarity measure, and easier builds on current toolchains:
 -   The reference set used to normalize distances (Mutual Proximity) is now
     the whole collection for libraries up to 8000 tracks, instead of a
     sample of 1000. This removes the dependency on which tracks happen to
-    be sampled, at the cost of a slower one-off jukebox initialization
-    (about 3.5 minutes for 5000 tracks). Larger collections keep using a
-    sample drawn from the entire collection.
+    be sampled, at the cost of a slower one-off jukebox initialization.
+    Larger collections keep using a sample drawn from the entire collection.
+-   Jukebox initialization and playlist queries are substantially faster:
+    `add_tracks` is parallelized with OpenMP, `-p` accepts multiple seeds
+    (and `-p -` reads paths from stdin) so a burst of queries pays the
+    collection load once, unchanged collections load the jukebox in “lean”
+    mode (skipping the unused Mutual Proximity reference models), and
+    `-a`/`-r` with `-J` keep the on-disk jukebox state up to date so
+    subsequent `-p` calls never rebuild from scratch.
 -   A multi-stage `Dockerfile` builds and self-tests Musly on Debian 13
     with FFmpeg 7.1, and runs a small decoder smoke test. The runtime
     image keeps the previous container contract (SSH, `/collection` and
@@ -221,6 +227,8 @@ The command line interface is able to:
 * Maintain an existing collection: add further directories with `-a`,
   remove tracks or directories with `-r`, and drop entries whose audio
   file is gone with `-R -y`.
+* Compute playlists for several seeds in one run (`-p` may be repeated;
+  `-p -` reads paths from stdin).
   
 The command line tool is called "musly". Use "musly -h" to read about all
 available options. See <http://www.musly.org> for more information.

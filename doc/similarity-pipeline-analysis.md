@@ -91,6 +91,19 @@ available as the baseline variant without Mutual Proximity.
   state file whose reference set no longer matches is rebuilt instead of being
   applied to the wrong tracks
 
+### Stage 6 — jukebox performance
+- `timbre::add_tracks` parallelized with OpenMP (private distance buffer per
+  thread); registration of N tracks against an N-track reference set scales
+  with core count
+- `musly_jukebox_fromstream_lean()` skips the Mutual Proximity reference
+  models in the jukebox header; the CLI uses it whenever the collection and
+  fingerprint match exactly, cutting jukebox I/O from ~N·track_size down to
+  ~12 bytes per track
+- `-p` is repeatable and accepts `-` for stdin, so a burst of queries loads
+  the collection once
+- With `-J`, `-a` incrementally updates the on-disk jukebox and `-r`/`-R`
+  rebuild it, so query invocations never pay for a full `tracks_initialize`
+
 ## Mutual Proximity reference set
 
 `musly_jukebox_setmusicstyle()` does not take part in the distance between two
@@ -136,12 +149,21 @@ through the incremental update path are calibrated against the stored
 reference set. The existing rule that rebuilds the jukebox once the collection
 has grown by more than 10% keeps that gap bounded.
 
-Registration costs `tracks × reference` distance evaluations at ~7.2 µs each,
-single threaded (`timbre::add_tracks` is not parallelized): about 40 s for
-5000 tracks against a sample of 1000, about 3.5 minutes against the whole
-collection, and about 8 minutes at the 8000-track limit. The reference tracks
-are copied into the jukebox and into its state file, which grows accordingly
-(~5.3 kB per track).
+Registration costs `tracks × reference` distance evaluations. Measured on the
+container (`test/jukebox_baseline`, timbre2):
+
+| N | threads | add_tracks | µs / pair | one query |
+|---|---------|------------|-----------|-----------|
+| 800 | 1 | 4.66 s | 7.3 | 6 ms |
+| 800 | 4 | 1.68 s | 2.6 | 8 ms |
+| 1500 | (default) | 4.71 s | 2.1 | 15 ms |
+
+So wall-clock time for a full rebuild against the whole collection scales with
+core count. Extrapolating to 5000 tracks: roughly half a minute on four cores
+instead of the previous ~3.5 minutes single-threaded. The reference tracks are
+still copied into the jukebox state file (~5.3 kB per track), but query-time
+loads use `musly_jukebox_fromstream_lean()` and skip that payload when the
+collection has not changed.
 
 ## Quality evaluation protocol
 

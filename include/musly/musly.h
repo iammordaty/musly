@@ -551,10 +551,27 @@ musly_jukebox_tostream(
  *
  * \note See the note in musly_jukebox_tostream() for compatibility issues.
  *
- * \sa musly_jukebox_tostream()
+ * \sa musly_jukebox_tostream(), musly_jukebox_fromstream_lean()
  */
 MUSLY_EXPORT musly_jukebox*
 musly_jukebox_fromstream(
+        FILE* stream);
+
+
+/**
+ * Like musly_jukebox_fromstream(), but skips the Mutual Proximity reference
+ * set stored in the jukebox header. The resulting jukebox can answer
+ * similarity queries but cannot register additional tracks until
+ * musly_jukebox_setmusicstyle() is called again. Requires a seekable stream.
+ *
+ * Use this when the collection has not grown since the state was written and
+ * only queries are needed: it avoids reading several megabytes of reference
+ * track models that are unused for ranking.
+ *
+ * \sa musly_jukebox_fromstream()
+ */
+MUSLY_EXPORT musly_jukebox*
+musly_jukebox_fromstream_lean(
         FILE* stream);
 #endif  // MUSLY_SUPPORT_STDIO
 

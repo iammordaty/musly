@@ -117,7 +117,8 @@ mutualproximity::set_normfacts(
         float mu,
         float std) {
     // allocate space if needed
-    // (ideally, this has already been taken care of by append_normfacts)
+    // (ideally, this has already been taken care of by append_normfacts;
+    // resizing here is not safe under concurrent writers)
     if (position >= (int)norm_facts.size()) {
         norm_facts.resize(position+1);
     }

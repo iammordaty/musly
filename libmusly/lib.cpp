@@ -469,9 +469,10 @@ musly_jukebox_tostream(
     return written;
 }
 
-musly_jukebox*
-musly_jukebox_fromstream(
-        FILE* stream) {
+static musly_jukebox*
+musly_jukebox_fromstream_ex(
+        FILE* stream,
+        int lean) {
     struct {
         bool operator() (FILE* stream, std::string& str) {
             std::ostringstream oss;
@@ -518,23 +519,53 @@ musly_jukebox_fromstream(
         return NULL;
     }
 
+    musly::method* m = reinterpret_cast<musly::method*>(jukebox->method);
     unsigned char* buffer;
 
     // read jukebox-specific header
     int size_head;
-    if (fread(&size_head, sizeof(size_head), 1, stream) != 1) {
+    if (fread(&size_head, sizeof(size_head), 1, stream) != 1 || size_head < 0) {
         musly_jukebox_poweroff(jukebox);
         return NULL;
     }
-    buffer = new unsigned char[size_head];
+
     int expected_tracks;
-    if ((int)fread(buffer, 1, size_head, stream) != size_head ||
-            (expected_tracks = musly_jukebox_frombin(jukebox, buffer, 1, 0)) < 0) {
-        musly_jukebox_poweroff(jukebox);
+    if (lean) {
+        // Header layout shared by timbre / mandelellis: expected_tracks,
+        // max_seen, then (for MP methods) num_mptracks + track models.
+        // Similarity queries only need the per-track mu/std that follow the
+        // header, so skip the reference models without reading them.
+        const int prefix = (int)(sizeof(int) + sizeof(musly_trackid));
+        if (size_head < prefix) {
+            musly_jukebox_poweroff(jukebox);
+            return NULL;
+        }
+        int trackcount = 0;
+        musly_trackid max_seen = 0;
+        if (fread(&trackcount, sizeof(int), 1, stream) != 1 ||
+                fread(&max_seen, sizeof(musly_trackid), 1, stream) != 1) {
+            musly_jukebox_poweroff(jukebox);
+            return NULL;
+        }
+        if (fseek(stream, size_head - prefix, SEEK_CUR) != 0) {
+            musly_jukebox_poweroff(jukebox);
+            return NULL;
+        }
+        expected_tracks = m->deserialize_metadata_lean(trackcount, max_seen);
+        if (expected_tracks < 0) {
+            musly_jukebox_poweroff(jukebox);
+            return NULL;
+        }
+    } else {
+        buffer = new unsigned char[size_head];
+        if ((int)fread(buffer, 1, size_head, stream) != size_head ||
+                (expected_tracks = musly_jukebox_frombin(jukebox, buffer, 1, 0)) < 0) {
+            musly_jukebox_poweroff(jukebox);
+            delete[] buffer;
+            return NULL;
+        }
         delete[] buffer;
-        return NULL;
     }
-    delete[] buffer;
 
     // read jukebox-specific track information
     // read in chunks of about 64 KiB
@@ -543,7 +574,8 @@ musly_jukebox_fromstream(
         musly_jukebox_poweroff(jukebox);
         return NULL;
     }
-    const int batchsize = std::min(std::max(64<<10 / size_track, 1), expected_tracks);
+    const int batchsize = std::min(std::max(64<<10 / size_track, 1),
+            std::max(expected_tracks, 1));
     buffer = new unsigned char[batchsize * size_track];
     while (expected_tracks) {
         int read = std::min(expected_tracks, batchsize);
@@ -558,6 +590,18 @@ musly_jukebox_fromstream(
     delete[] buffer;
 
     return jukebox;
+}
+
+musly_jukebox*
+musly_jukebox_fromstream(
+        FILE* stream) {
+    return musly_jukebox_fromstream_ex(stream, 0);
+}
+
+musly_jukebox*
+musly_jukebox_fromstream_lean(
+        FILE* stream) {
+    return musly_jukebox_fromstream_ex(stream, 1);
 }
 
 int

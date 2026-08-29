@@ -24,3 +24,10 @@ add_executable(reference_set_experiment
 
 target_link_libraries(reference_set_experiment
     libmusly)
+
+# Timing harness for jukebox build / load / query. Not a pass/fail test.
+add_executable(jukebox_baseline
+    jukebox_baseline.cpp)
+
+target_link_libraries(jukebox_baseline
+    libmusly)

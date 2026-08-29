@@ -66,9 +66,10 @@ programoptions::programoptions(int argc, char *argv[],
             }
             break;
 
-        // -a and -r may be repeated to cover several locations in one run
+        // -a, -r and -p may be repeated to cover several locations / seeds
         case 'a':
-        case 'r': {
+        case 'r':
+        case 'p': {
             std::string copt;
             copt = (char)(c);
             if ((action.length() != 0) && (action != copt)) {
@@ -100,7 +101,6 @@ programoptions::programoptions(int argc, char *argv[],
         case 'd':
         case 'm':
         case 's':
-        case 'p':
             if (action.length() != 0) {
                 action = "error";
             } else {
@@ -235,20 +235,21 @@ cout << " MUSIC ANALYSIS/PLAYLIST GENERATION:" << endl;
 cout << "  -a DIR/FILE  analyze and add the given audio FILE to the collection" << endl
      << "               file. If a Directory is given, the directory is scanned" << endl
      << "               recursively for audio files. May be repeated to scan" << endl
-     << "               several locations in a single run." << endl;
+     << "               several locations in a single run. With '-j'/'-J' the" << endl
+     << "               jukebox state is updated so later '-p' queries stay fast." << endl;
 cout << "  -x EXT       only analyze files with file extension EXT when adding" << endl
      << "               audio files with '-a'. DEFAULT: '' (any)" << endl;
 cout << "  -r DIR/FILE  remove the given FILE from the collection file. If a" << endl
      << "               Directory is given, every track below it is removed." << endl
-     << "               May be repeated. Invalidates the jukebox state file." << endl;
+     << "               May be repeated. Rebuilds the jukebox state when '-j'" << endl
+     << "               or '-J' is given; otherwise invalidates it." << endl;
 cout << "  -R           remove all tracks whose audio file no longer exists." << endl
      << "               Lists the affected tracks without changing anything" << endl
      << "               unless '-y' is given as well." << endl;
 cout << "  -y           confirm the destructive operation requested with '-R'." << endl;
 cout << "  -p FILE      print a playlist of the '-k' most similar tracks for" << endl
-     << "               the given FILE. If FILE is not found in the collection" << endl
-     << "               file, it is analyzed and then compared to all other" << endl
-     << "               tracks found in the collection file ('-c')." << endl;
+     << "               the given FILE. May be repeated; '-p -' reads paths" << endl
+     << "               from stdin (one per line). Unknown seeds are skipped." << endl;
 cout << " LISTING:" << endl;
 cout << "  -l           list all files in the collection file." << endl;
 cout << "  -d           dump the features in the collection file to the console" << endl;

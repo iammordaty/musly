@@ -149,4 +149,40 @@ test "$GUARD_RET" != "0"
 grep -q "Refusing to remove more than half" guard.txt
 test "$(track_count guard.musly)" = "24"
 
+echo "=== Batch -p and stdin ==="
+rm -f batch.musly batch.musly.jbox
+musly -N -c batch.musly
+musly -c batch.musly -a tone.wav -a noise.wav -a stereo.wav
+musly -c batch.musly -J -k 2 -p tone.wav -p noise.wav | tee batch1.txt
+grep -c "most similar tracks to:" batch1.txt | grep -q 2
+# unknown seed is skipped; the other seed still produces a playlist
+set +e
+musly -c batch.musly -J -k 2 -p tone.wav -p missing.wav > batch2.txt 2>&1
+BATCH_RET=$?
+set -e
+test "$BATCH_RET" != "0"
+grep -q "skipping: missing.wav" batch2.txt
+grep -q "most similar tracks to: tone.wav" batch2.txt
+printf '%s\n' tone.wav noise.wav | musly -c batch.musly -J -k 2 -p - | tee batch3.txt
+grep -c "most similar tracks to:" batch3.txt | grep -q 2
+# lean load on an exact match
+grep -q "Reading jukebox file (lean)" batch3.txt
+
+echo "=== Jukebox maintained on -a / -r with -J ==="
+rm -f maint.musly maint.musly.jbox
+musly -N -c maint.musly
+musly -c maint.musly -J -a tone.wav -a noise.wav
+test -f maint.musly.jbox
+# adding more tracks with -J must keep the jukebox usable without a rebuild from -p
+BEFORE=$(wc -c < maint.musly.jbox)
+musly -c maint.musly -J -a stereo.wav | tee maint_add.txt
+grep -q "Updating jukebox\|Rebuilding jukebox" maint_add.txt
+test -f maint.musly.jbox
+# removal with -J rebuilds rather than deleting
+musly -c maint.musly -J -r noise.wav | tee maint_rm.txt
+grep -q "Rebuilding jukebox after removal" maint_rm.txt
+test -f maint.musly.jbox
+musly -c maint.musly -J -k 2 -p tone.wav | tee maint_p.txt
+grep -q "Reading jukebox file (lean)" maint_p.txt
+
 echo "=== Decoder tests OK ==="

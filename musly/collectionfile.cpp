@@ -45,6 +45,10 @@ collection_file::open(std::string mode)
     if (fid) {
         fclose(fid);
     }
+    // A fresh open restarts the scan; keep the duplicate map in sync so a
+    // later pass in a different mode (e.g. 't' after 'q') is not treated as
+    // already consumed.
+    filemap.clear();
     fid = fopen(coll.c_str(), mode.c_str());
     if (!fid) {
         return false;

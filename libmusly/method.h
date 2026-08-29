@@ -230,6 +230,22 @@ public:
             unsigned char* buffer);
 
     /**
+     * Restores just enough jukebox metadata to answer similarity queries,
+     * without loading the Mutual Proximity reference set. A jukebox restored
+     * this way cannot register additional tracks until set_musicstyle() is
+     * called again. Default implementation falls back to
+     * deserialize_metadata().
+     *
+     * \param expected_tracks Number of registered tracks stored in the header
+     * \param max_seen Largest track id stored in the header
+     * \returns \p expected_tracks on success, or -1 on error
+     */
+    virtual int
+    deserialize_metadata_lean(
+            int expected_tracks,
+            musly_trackid max_seen);
+
+    /**
      * Restores the jukebox state for registered tracks from a binary buffer.
      *
      * \param buffer The buffer to read from.

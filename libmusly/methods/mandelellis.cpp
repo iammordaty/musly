@@ -225,6 +225,15 @@ mandelellis::deserialize_metadata(
 }
 
 int
+mandelellis::deserialize_metadata_lean(
+        int expected_tracks,
+        musly_trackid max_seen) {
+    idpool.add_ids(&max_seen, 1);
+    idpool.remove_ids(&max_seen, 1);
+    return expected_tracks;
+}
+
+int
 mandelellis::serialize_trackdata(
         unsigned char* buffer,
         int num_tracks,
