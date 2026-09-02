@@ -167,14 +167,15 @@ collection has not changed.
 
 ## Quality evaluation protocol
 
-1. **Self-test in the container** — `docker build` runs `ctest` (degenerate cases + numerical regression).
+1. **Self-test in the container** — `docker build` runs `ctest` (degenerate cases, excerpt focus, synthetic family retrieval).
 2. **Decoder path** — files generated with `ffmpeg` (tone, noise, stereo, silence, antiphase, 8 kHz, corrupted) → `musly -n/-a/-p/-m` (`test/decoder_smoke.sh`).
-3. **kNN ablation** — `musly -E` with an artist filter on a genre-labeled collection ([MIREX / musly.org protocol](https://www.musly.org/methods.html)).
-4. **Reference set sensitivity** — `test/reference_set_experiment` when changing the reference set policy or the MP normalization.
-4. **Acceptance gates**
+3. **FMA-small harness** — reproducible genre ranking with artist filter, paired stats, and perturbation robustness: see [`eval/REPORT.md`](../eval/REPORT.md) and the scripts under [`eval/`](../eval/).
+4. **kNN ablation (legacy CLI)** — `musly -E` with an artist filter on a genre-labeled collection ([MIREX / musly.org protocol](https://www.musly.org/methods.html)).
+5. **Reference set sensitivity** — `test/reference_set_experiment` when changing the reference set policy or the MP normalization.
+6. **Acceptance gates**
    - Stage 0: no change in results for valid audio
    - Stage 2: changes only at `float` precision
-   - Stages 3–4: accept only if kNN accuracy does not drop
+   - Stages 3–4: accept only if the `eval/` decision rules say so (not merely “different neighbors”)
 
 ### Verification results (container `musly:dev`)
 
@@ -188,23 +189,27 @@ collection has not changed.
 | Decoder: silence / antiphase / corrupted rejected | PASSED |
 | `musly -i` → `mandelellis,timbre,timbre2` | PASSED |
 
-### kNN ablation (fill in on your labeled collection)
+### kNN / ranking evaluation (FMA-small)
 
-Run (mount a collection with labels in the path, e.g. `.../genre/artist/track.mp3`):
+Prefer the harness over a one-off `-E` run:
 
 ```bash
-docker run --rm -v /path/to/collection:/collection -v /tmp/meta:/metadata musly:dev \
-  bash -c 'cd /metadata && musly -N -c c.musly && musly -c c.musly -a /collection -x mp3 \
-           && musly -c c.musly -E -f 1 -k 5'
+python3 eval/fetch_fma.py
+python3 eval/prepare_dataset.py
+docker build -t musly:dev .
+CHECK_DETERMINISM=1 eval/run_benchmark.sh
 ```
 
-| Variant | kNN accuracy | Notes |
-|---------|--------------|-------|
-| `mandelellis` (baseline) | _(fill in)_ | no MP |
-| `timbre` (after stages 2–3) | _(fill in)_ | RMS, silence, segments, shrinkage |
-| `timbre2` (default) | _(fill in)_ | + MFCC deltas |
+Filled results for run `fma_small_20260831T103326Z` (7994 tracks, artist filter):
 
-Acceptance for stages 3–4: `timbre` / `timbre2` accuracy ≥ historical `timbre` accuracy on the same collection.
+| Variant | P@10 | knn@5 | Notes |
+|---------|------|-------|-------|
+| `timbre` | 0.347 | 0.425 | shared stage 2–3 pipeline |
+| `timbre2` (default) | 0.360 | 0.443 | + MFCC deltas; ΔP@10 ≈ +0.013, CI above 0 |
+
+See [`eval/REPORT.md`](../eval/REPORT.md) for the full decision-rule verdict
+(hubness rose; volume perturbations are weak for both methods). A changed
+neighbor list alone is not acceptance.
 
 ## Deliberately omitted
 

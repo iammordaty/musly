@@ -14,3 +14,12 @@
 
 # Optional external Musly Add-On Code
 libmusly/external
+
+# Evaluation harness downloads and outputs
+eval/data/
+eval/results/
+eval/.venv/
+__pycache__/
+
+# Build directory
+build/

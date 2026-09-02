@@ -1,0 +1,33 @@
+{
+  "description": "Pinned FMA-small baseline from run fma_small_20260831T103326Z (timbre2, artist filter, k=100).",
+  "environment": {
+    "method": "timbre2",
+    "manifest_sha256": "6bf64128a580fe4d54b32d9e3d410b2f028126a055b4e3a88e6d3f65ee31a3ec",
+    "dataset": "fma_small",
+    "artist_filter": true,
+    "k": 100,
+    "n_analyzed": 7994,
+    "run_id": "fma_small_20260831T103326Z",
+    "dump_sha256": "39d9f776b0a814afb72cf5770597ce152726fd91706cae9640178f9e2f7c17ea"
+  },
+  "metrics": {
+    "P@1": 0.3912934701025769,
+    "P@5": 0.3728046034525894,
+    "P@10": 0.36038278709031774,
+    "P@20": 0.34542782086564927,
+    "MAP@100": 0.015960584517661632,
+    "NDCG@10": 0.36689739770557267,
+    "NDCG@100": 0.31162609843753264,
+    "MRR": 0.5406550738210731,
+    "knn_acc@5": 0.44308231173380036,
+    "hubness_skewness_k5": 2.75835014762528,
+    "auc_same_genre": 0.5786360493986258
+  },
+  "ci": {
+    "P@10": [0.350, 0.370],
+    "MAP@100": [0.014, 0.018],
+    "knn_acc@5": [0.420, 0.470],
+    "auc_same_genre": [0.560, 0.600]
+  },
+  "notes": "Pinned after the first full FMA-small harness run. regression.py fails if P@10 drops by more than 0.005 absolute or a metric leaves its ci band, provided the manifest fingerprint still matches."
+}
