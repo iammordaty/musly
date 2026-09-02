@@ -18,3 +18,11 @@ doc/html/
 libmusly/external
 .cursor/
 **/.DS_Store
+# The evaluation harness keeps tens of GB of audio, dumps and virtualenvs next
+# to the sources. None of it belongs in the image, and shipping it as build
+# context cost minutes per build.
+eval/data/
+eval/results/
+eval/.venv/
+**/__pycache__/
+*.pyc

@@ -42,12 +42,21 @@ typedef unsigned char uint8_t;
 #include "methods/timbre.h"
 #include "methods/timbre2.h"
 #include "methods/timbre2_cs.h"
+#include "methods/timbre2_cs_sh20.h"
+#include "methods/timbre2_cs_sh25.h"
+#include "methods/timbre2_sh20.h"
+#include "methods/timbre2_sh25.h"
 #include "decoders/libav.h"
 
 MUSLY_METHOD_REGSTATIC(mandelellis, 0);
 MUSLY_METHOD_REGSTATIC(timbre, 1);
 MUSLY_METHOD_REGSTATIC(timbre2, 2);
-MUSLY_METHOD_REGSTATIC(timbre2_cs, 3);
+// Negative priority: selectable by name, never the default method.
+MUSLY_METHOD_REGSTATIC(timbre2_cs, -1);
+MUSLY_METHOD_REGSTATIC(timbre2_cs_sh20, -1);
+MUSLY_METHOD_REGSTATIC(timbre2_cs_sh25, -1);
+MUSLY_METHOD_REGSTATIC(timbre2_sh20, -1);
+MUSLY_METHOD_REGSTATIC(timbre2_sh25, -1);
 MUSLY_DECODER_REGSTATIC(libav, 0);
 
 #ifdef LIBMUSLY_EXTERNAL
