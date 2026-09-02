@@ -245,17 +245,26 @@ as an improvement.
 
 Full numbers, trade-offs and the recorded failures are in
 `eval/TUNING_RESULTS.md`; the ranked experiment catalogue is in `eval/TUNING.md`.
-Baseline for all of it: `timbre2` at P@10 0.3604, hub skewness 2.758, hub max 96,
-perturbation top-1 0.3356.
+Baseline for all of it: `timbre2` at P@10 0.3604, hub skewness 2.758, hub max 96.
+
+Perturbation figures quoted below are on the **old, confounded** metric, kept so
+the arms stay comparable to each other. All eight variants of a track live in
+one collection, so siblings competed with the original for rank 1; sibling
+exclusion is now the default (`eval/score_perturbations.py`) and it moves
+`timbre2` overall top-1 from 0.336 to 0.845 without changing any features. On
+the corrected metric every arm of this round lands within 1.2 pp
+(0.841–0.853), so **the perturbation suite does not separate them at all** —
+including `timbre2_cs`, whose apparent +1.9 pp becomes −0.4 pp.
 
 **Won — kept as `timbre2_cs`.** A CSLS-style hub penalty folded into the Mutual
 Proximity reference distributions (`mutualproximity::normalize_csls()`, enabled
-by the `csls_pre_mp` constructor flag). P@10 0.3639, perturbations 0.3550 and
-hub max 96 → 70, i.e. back to `timbre`'s level. Hub *skewness* moves the wrong
-way (2.758 → 2.886): the correction cuts the extreme tail and tightens the bulk,
-which that statistic reads as more skew. Query-time only, no re-analysis.
-Left opt-in rather than promoted into `timbre2`, because skewness is the metric
-the baseline pin tracks.
+by the `csls_pre_mp` constructor flag). P@10 0.3639 and hub max 96 → 70, i.e.
+back to `timbre`'s level. Hub *skewness* moves the wrong way (2.758 → 2.886):
+the correction cuts the extreme tail and tightens the bulk, which that statistic
+reads as more skew. Query-time only, no re-analysis. Left opt-in rather than
+promoted into `timbre2`, because skewness is the metric the baseline pin tracks.
+The case for it rests on P@10 and hub max alone — its perturbation advantage
+disappeared once the metric was corrected.
 
 **Lost — reverted.** Two variants were evaluated and removed again; only their
 tunable parameters remain, at inert defaults:
@@ -277,15 +286,24 @@ dimensions.** Re-register the variants in `libmusly/lib.cpp` and
 1. **λ grid on top of `timbre2_cs`** (`{0.20, 0.25}`). λ acts at analysis time
    and CSLS at query time, so the effects are independent: the combination is the
    only open path to improving hubness on *both* statistics while keeping the
-   ranking and robustness gains. ~4 h per λ (full re-analysis).
-2. **Verify clipping before tuning loudness.** Every variant moved `vol_p6` by
-   ≤1 pp (0.090–0.105), which is what you would see if the `+6 dB` fixtures are
-   already clipped by ffmpeg and the information is gone before Musly reads them.
-   `ffmpeg -af volumedetect` settles it in minutes and decides whether tuning
-   `target_rms` (`libmusly/powerspectrum.cpp`) can achieve anything.
-3. **Do not treat `rate16k` as a scoring problem.** It is 0.0 top-1 for every
-   method tried, including the fixed CSLS — that is resampling / feature
-   extraction, not ranking.
+   ranking and robustness gains. About 70 min per λ, measured end to end on
+   FMA-small: ~31 min to analyze 7994 tracks, ~16 min for the k=100 dump,
+   ~9 min for the AUC subsample, ~13 min for the perturbation set.
+   A query-time-only variant costs ~33 min instead, because
+   `eval/clone_collection.py` reuses the baseline features.
+2. **Loudness is done; don't tune `target_rms`.** The weak `vol_p6` figure was
+   a metric artifact, and the one real bug behind it is fixed: `resampler::
+   resample()` hard-clipped every sample to [-1, 1], which distorted any
+   above-full-scale content — including the originals, which peak above 0 dBFS
+   after mp3 decoding — before the scale-invariant RMS normalization could run.
+   It now attenuates uniformly by `1/peak`, and `musly -d` confirms a lossless
+   +6 dB copy yields features identical to the original to six decimals.
+   Note `ffmpeg -af volumedetect` is the *wrong* tool to audit this: it caps
+   `max_volume` at 0.0 dB and cannot see above-full-scale float. Use `astats`.
+3. **`rate16k` is the one real robustness failure left** (0.11–0.13 top-1 on the
+   corrected metric, for every method tried). It is resampling / feature
+   extraction, not ranking, so do not attack it from the scoring side.
+   `mp3_64k` (0.65–0.73) is second.
 4. **Keep `OMP_NUM_THREADS=1` for anything reproducible.** Parallel `-a` is not
    deterministic: two 8-thread runs over the same 60 tracks produced different
    collection files, while single-threaded runs were byte identical. Each thread

@@ -100,6 +100,88 @@ from the delta dimensions themselves.**
 Not worth shipping as-is — it trades ranking for one hubness statistic — but it
 is the right knob for a follow-up grid.
 
+## Experiment A — is the weak `vol_p6` result a fixture problem?
+
+Motivated by every variant moving `vol_p6` by ≤1 pp. Three findings, in the
+order they were established; the first one was wrong and is kept on the record
+because it explains the second.
+
+### A1. The `volumedetect` verdict was wrong
+
+`eval/check_clipping.py` reported 95 % of `vol_p6` fixtures "clipped" with a
+median 5.9 dB of headroom lost. **That conclusion does not hold.** ffmpeg's
+`volumedetect` caps `max_volume` at 0.0 dB and lumps every sample at or above
+0 dBFS into `histogram_0db`, so it cannot distinguish hard clipping from
+above-full-scale float content. Measured with `astats` instead, a `vol_p6`
+fixture has a true peak of **+7.78 dB** and max level 2.37 — mp3 decodes to
+float and carries the boost intact. The fixtures are fine.
+
+### A2. Musly clipped the signal itself, in the resampler
+
+`resampler::resample()` hard-limited every output sample to [-1, 1]. FMA is
+44.1 kHz and Musly targets 22.05 kHz, so **every** track passes through it. The
+RMS normalization in `powerspectrum::from_pcm()` is scale invariant as written,
+but it runs *after* that clamp, so it could not undo the distortion. The
+originals were affected too: the measured original peaked at +1.88 dB.
+
+Fixed by attenuating uniformly by `1/peak` when the peak exceeds full scale,
+which keeps the [-1, 1] output contract without distorting the waveform
+(~12 lines in `libmusly/resampler.cpp`).
+
+Verified directly with `musly -d`: after the fix the Gaussian features of
+`originals/X.mp3`, `f32_p0/X.wav` (lossless copy) and `f32_p6/X.wav` (same
+audio +6 dB) agree to six decimals — `covar_logdet` -17.389666 / -17.389666 /
+-17.389668. Musly is now exactly gain invariant. Before the fix the same
+comparison differed substantially.
+
+### A3. The perturbation metric was confounded by sibling variants
+
+The suite puts 200 originals and **eight variants of each** into one collection,
+then asks whether the original is the top neighbor of a variant. Once two
+variants of the same track are near-identical, they compete with the original,
+so the metric largely measured "is the original ahead of my seven siblings".
+
+Sibling exclusion is now the default in `eval/score_perturbations.py`
+(`--include-siblings` reproduces the old numbers). Re-scoring the existing
+dumps is pure post-processing — seconds, same features. `timbre2`:
+
+| Variant | Confounded top-1 | Corrected top-1 | Sibling ranked ahead |
+|---|---|---|---|
+| `vol_p6` | 0.095 | **0.995** | 90.5 % |
+| `vol_m12` | 0.600 | **1.000** | 40.0 % |
+| `silence_pre20` | 0.140 | **0.995** | 86.0 % |
+| `loop4m` | 0.420 | **1.000** | 58.0 % |
+| `mid15s` | 0.500 | **0.990** | 50.0 % |
+| `lowpass8k` | 0.825 | **1.000** | 17.5 % |
+| `mp3_64k` | 0.105 | **0.650** | 60.0 % |
+| `rate16k` | 0.000 | **0.130** | 15.0 % |
+
+Overall corrected top-1: `timbre` 0.853, `timbre2` 0.845, `timbre2_cs` 0.841,
+`timbre2_d05` 0.845, `timbre2_sh15` 0.846 — against 0.333/0.336/0.355/0.324/0.326
+on the confounded metric.
+
+**So loudness robustness was never a real problem.** The premise "vol_* are far
+from 1.0" was an artifact of the protocol. What survives as a genuine weakness
+is `mp3_64k` (0.65) and above all `rate16k` (0.13), and note that all methods
+sit within 1.2 pp of each other on the corrected metric — the perturbation suite
+does not separate them, which the confounded numbers made look otherwise
+(`timbre2_cs` "+1.9 pp" is reversed to −0.4 pp once corrected).
+
+### Status of the resampler fix: kept, unvalidated
+
+The fix is correct and removes a real bug, but experiment A also shows it was
+not what held `vol_p6` back — on the corrected metric `vol_p6` was already at
+0.995 before it.
+
+It was **accepted without a ranking run** as an obvious bug fix. Two open
+consequences follow from that decision:
+
+- Its effect on P@10 and hubness is unmeasured. It changes the features of
+  every track whose decoded signal exceeds full scale, which on FMA-small is
+  most of them, so the effect is not necessarily small.
+- `eval/baselines/fma_small.json` no longer reproduces (`dump_sha256`, and the
+  metric bands are unverified). Re-pin from the next full run.
+
 ## Runtime behaviour that looks like a hang (it is not)
 
 `tracks_add` (`musly/main.cpp`) analyzes a whole directory first and only then

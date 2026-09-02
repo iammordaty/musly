@@ -19,7 +19,9 @@ neighbor list as proof of improvement.
 - **Mandatory artist filter** (`musly -s -f 1` after building
   `genre/artist/track.mp3` paths) so album/artist leakage does not inflate scores.
 - **Perturbations:** for each variant query, the matching original is the sole
-  relevant item (automatic, no annotation).
+  relevant item (automatic, no annotation). The other variants of the *same*
+  source track are **excluded from the ranking** before the original's rank is
+  taken — see the note under the perturbation results for why.
 
 ## Metrics
 
@@ -46,7 +48,9 @@ Call **real improvement** of B over A only if all hold:
 2. Cluster-bootstrap 95% CI for ΔP@10 entirely above 0  
 3. Same sign of Δ for P@1, P@5, P@10, P@20  
 4. Hubness skewness does not increase materially  
-5. Perturbation top-1 / MRR does not regress (especially `vol_*`)
+5. Perturbation top-1 / MRR does not regress (read the sibling-excluded
+   numbers; on the corrected metric all methods sit within ~1 pp, so this rule
+   discriminates only for `mp3_64k` and `rate16k`)
 
 If |ΔP@10| < 0.01, report **neutral** regardless of p-value (large N makes
 tiny changes “significant”).
@@ -80,6 +84,13 @@ eval/.venv/bin/python eval/make_perturbations.py --tree eval/data/tree --n 200
 eval/run_perturbations.sh timbre
 eval/run_perturbations.sh timbre2
 
+# Gain-invariance check (200 sources, ~10 min for three methods)
+eval/.venv/bin/python eval/make_gain_fixtures.py
+eval/run_gaincheck.sh
+
+# Peak levels of the fixtures; use astats, not volumedetect
+eval/.venv/bin/python eval/check_clipping.py
+
 # Level-2 regression against the pinned baseline
 eval/.venv/bin/python eval/regression.py \
   --metrics eval/results/<run>/timbre2/metrics.json \
@@ -91,6 +102,15 @@ The pinned baseline lives in `eval/baselines/fma_small.json` (run
 `fma_small_20260831T103326Z`). Re-pin only after an intentional accepted
 change: copy fresh `metrics.json` values, set `environment.manifest_sha256`
 from `run.json` / `manifest.json`, and refresh the `ci` bands if needed.
+
+> **The pin is stale.** The resampler clipping fix (`libmusly/resampler.cpp`,
+> see `eval/TUNING_RESULTS.md` experiment A2) changes the features of every
+> track whose decoded signal exceeds full scale, which on FMA-small is most of
+> them. `environment.dump_sha256` will therefore not reproduce, and the metric
+> bands are unverified against the fixed code. The fix was accepted without a
+> validation run as an obvious bug fix; the next full FMA-small run should be
+> used to re-pin. Until then treat `regression.py` failures on this pin as
+> expected rather than as a regression.
 
 ## Results
 
@@ -116,14 +136,32 @@ Paired `timbre` → `timbre2` on P@10 (`compare.json`):
 
 ### Perturbation robustness (200 sources × 8 variants)
 
+Siblings excluded (current default):
+
 | Method | overall top-1 | vol_m12 | vol_p6 | mp3_64k | lowpass8k | rate16k | silence_pre20 | mid15s | loop4m |
 |--------|---------------|---------|--------|---------|-----------|---------|---------------|--------|--------|
-| timbre | 0.333 | 0.60 | 0.11 | 0.12 | 0.84 | 0.00 | 0.12 | 0.49 | 0.39 |
-| timbre2 | 0.336 | 0.60 | 0.10 | 0.11 | 0.83 | 0.00 | 0.14 | 0.50 | 0.42 |
+| timbre | 0.853 | 1.00 | 1.00 | 0.73 | 1.00 | 0.11 | 1.00 | 0.99 | 1.00 |
+| timbre2 | 0.845 | 1.00 | 1.00 | 0.65 | 1.00 | 0.13 | 1.00 | 0.99 | 1.00 |
 
-Overall top-1 / MRR are essentially tied. Volume variants are **not** near
-1.0 for either method (especially `vol_p6`), so the RMS-normalization claim
-is only partially supported. `rate16k` fails for both.
+**Why these numbers replaced the earlier ones.** The collection contains all
+eight variants of every source track, so two near-identical variants compete
+with the original and push it below rank 1. The metric was therefore largely
+measuring "is the original ahead of my seven siblings". With
+`--include-siblings` the same dumps give overall top-1 0.333 / 0.336 and
+`vol_p6` 0.11 / 0.10 — but a sibling outranked the original for **90.5 %** of
+`vol_p6` queries, so that figure says almost nothing about gain robustness.
+
+Consequences: volume robustness is effectively perfect (`vol_m12`, `vol_p6`
+both ≈ 1.00), and so are silence padding, looping, cropping and lowpass. The
+genuine weaknesses are `mp3_64k` (0.65–0.73) and `rate16k` (0.11–0.13). All
+methods land within ~1 pp of each other overall, so this suite does not
+separate `timbre` from `timbre2`.
+
+An independent check on gain invariance is in `eval/data/gaincheck` (see
+`eval/make_gain_fixtures.py`, `eval/run_gaincheck.sh`): a lossless +6 dB WAV
+variant now yields Gaussian features identical to the original to six
+decimals, after the resampler clipping fix described in
+`eval/TUNING_RESULTS.md`.
 
 ### Verdict
 
@@ -131,20 +169,23 @@ Against the written decision rules:
 
 1–3 (ranking significance / CI / consistent P@K sign): **pass** for `timbre2`
 4 (hubness): **fail** — skewness rose 2.23 → 2.76, max k-occurrence 69 → 96  
-5 (perturbations): **pass vs each other** (no regression), but absolute
-   volume robustness is weak for **both** methods
+5 (perturbations): **pass** — 0.845 vs 0.853 overall, a 0.8 pp gap driven by
+   `mp3_64k` (0.65 vs 0.73); every other variant is tied at ≈ 1.00
 
 **Conclusion:** MFCC deltas improve artist-filtered genre ranking by a small
-but statistically solid margin (≈ +1.3 pp P@10). That is not a blanket
-quality win: hubness got worse, and stage-3 robustness (shared by both
-methods) still looks incomplete on gain changes and resampling. Keep
-`timbre2` as default for retrieval-oriented use, watch hubness on large
-collections, and treat volume / sample-rate robustness as open follow-up —
-not as evidence that stages 2–3 are fully validated.
+but statistically solid margin (≈ +1.3 pp P@10). That is not a blanket quality
+win: hubness got worse. Keep `timbre2` as default for retrieval-oriented use
+and watch hubness on large collections.
+
+Stage-3 robustness is in better shape than the first version of this report
+claimed: gain, silence padding, looping, cropping and lowpass are all at
+ceiling, and gain invariance is now exact. The open robustness questions are
+narrower and shared by both methods — aggressive mp3 quantization (`mp3_64k`)
+and low-sample-rate input (`rate16k`, 0.11–0.13, the one clear failure).
 
 Manual odd-one-out annotation is optional; automatic metrics are already
-decisive on ranking, and the main open questions are hubness and absolute
-perturbation floors rather than ties between the two methods.
+decisive on ranking, and the main open questions are hubness and the
+`rate16k` / `mp3_64k` floors rather than ties between the two methods.
 
 ## Implementation notes tied to Musly
 
