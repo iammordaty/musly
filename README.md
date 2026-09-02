@@ -233,6 +233,65 @@ The command line interface is able to:
 The command line tool is called "musly". Use "musly -h" to read about all
 available options. See <http://www.musly.org> for more information.
 
+### Evaluating similarity quality ###
+
+A reproducible harness under `eval/` compares methods (e.g. `timbre` vs
+`timbre2`) on FMA-small with an artist filter, ranking metrics, paired
+statistics, and a perturbation robustness set. See `eval/REPORT.md` for the
+protocol and decision rules. A different neighbor list alone is not treated
+as an improvement.
+
+### Tuning round 1 — what won and what lost ###
+
+Full numbers, trade-offs and the recorded failures are in
+`eval/TUNING_RESULTS.md`; the ranked experiment catalogue is in `eval/TUNING.md`.
+Baseline for all of it: `timbre2` at P@10 0.3604, hub skewness 2.758, hub max 96,
+perturbation top-1 0.3356.
+
+**Won — kept as `timbre2_cs`.** A CSLS-style hub penalty folded into the Mutual
+Proximity reference distributions (`mutualproximity::normalize_csls()`, enabled
+by the `csls_pre_mp` constructor flag). P@10 0.3639, perturbations 0.3550 and
+hub max 96 → 70, i.e. back to `timbre`'s level. Hub *skewness* moves the wrong
+way (2.758 → 2.886): the correction cuts the extreme tail and tightens the bulk,
+which that statistic reads as more skew. Query-time only, no re-analysis.
+Left opt-in rather than promoted into `timbre2`, because skewness is the metric
+the baseline pin tracks.
+
+**Lost — reverted.** Two variants were evaluated and removed again; only their
+tunable parameters remain, at inert defaults:
+
+| Experiment | Parameter left in code | Result |
+|---|---|---|
+| delta scale 0.5 | `timbre::delta_scale` (default 1.0) | P@10 −0.63 pp, skewness −0.02, perturbations −1.1 pp — worse or neutral everywhere |
+| covariance shrinkage λ=0.15 | `gaussian_statistics::shrinkage_lambda` (default 0.1) | skewness 2.758 → **2.491** (best of the round) but P@10 −0.62 pp and perturbations −0.94 pp |
+
+Those two together are the most useful diagnostic result of the round: scaling
+the delta dimensions down does nothing to hub skewness, while widening the
+covariance shrinkage does. **The hubness regression comes from the sharpness of
+the covariance estimate in the 50-dimensional feature space, not from the delta
+dimensions.** Re-register the variants in `libmusly/lib.cpp` and
+`libmusly/methods/timbre2_tuning.cpp` to reproduce those arms.
+
+### If you resume tuning ###
+
+1. **λ grid on top of `timbre2_cs`** (`{0.20, 0.25}`). λ acts at analysis time
+   and CSLS at query time, so the effects are independent: the combination is the
+   only open path to improving hubness on *both* statistics while keeping the
+   ranking and robustness gains. ~4 h per λ (full re-analysis).
+2. **Verify clipping before tuning loudness.** Every variant moved `vol_p6` by
+   ≤1 pp (0.090–0.105), which is what you would see if the `+6 dB` fixtures are
+   already clipped by ffmpeg and the information is gone before Musly reads them.
+   `ffmpeg -af volumedetect` settles it in minutes and decides whether tuning
+   `target_rms` (`libmusly/powerspectrum.cpp`) can achieve anything.
+3. **Do not treat `rate16k` as a scoring problem.** It is 0.0 top-1 for every
+   method tried, including the fixed CSLS — that is resampling / feature
+   extraction, not ranking.
+4. **Keep `OMP_NUM_THREADS=1` for anything reproducible.** Parallel `-a` is not
+   deterministic: two 8-thread runs over the same 60 tracks produced different
+   collection files, while single-threaded runs were byte identical. Each thread
+   writes only its own slot, but they share the method instance and decoder
+   scratch buffers through `mj`. The harness already pins one thread.
+
 
 ## Library ##
 

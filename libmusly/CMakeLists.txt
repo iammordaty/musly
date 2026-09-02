@@ -39,6 +39,7 @@ add_library(libmusly
     methods/mandelellis.cpp
     methods/timbre.cpp
     methods/timbre2.cpp
+    methods/timbre2_tuning.cpp
     decoders/libav.cpp
     resampler.cpp
     plugins.cpp

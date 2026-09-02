@@ -41,11 +41,13 @@ typedef unsigned char uint8_t;
 #include "methods/mandelellis.h"
 #include "methods/timbre.h"
 #include "methods/timbre2.h"
+#include "methods/timbre2_cs.h"
 #include "decoders/libav.h"
 
 MUSLY_METHOD_REGSTATIC(mandelellis, 0);
 MUSLY_METHOD_REGSTATIC(timbre, 1);
 MUSLY_METHOD_REGSTATIC(timbre2, 2);
+MUSLY_METHOD_REGSTATIC(timbre2_cs, 3);
 MUSLY_DECODER_REGSTATIC(libav, 0);
 
 #ifdef LIBMUSLY_EXTERNAL

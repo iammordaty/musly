@@ -22,9 +22,11 @@
 namespace musly {
 
 gaussian_statistics::gaussian_statistics(
-        int gaussian_dim) :
+        int gaussian_dim,
+        float shrinkage_lambda_) :
                 d(gaussian_dim),
-                covar_elems((d*(d+1)/2))
+                covar_elems((d*(d+1)/2)),
+                shrinkage_lambda(shrinkage_lambda_)
 {
 }
 
@@ -79,7 +81,7 @@ gaussian_statistics::estimate_gaussian(
 
     // Ledoit-Wolf style relative shrinkage toward scaled identity.
     // Scale-invariant and improves conditioning with correlated MFCC frames.
-    const double lambda = 0.1;
+    const double lambda = shrinkage_lambda;
     double mean_var = covar.trace() / static_cast<double>(d);
     if (!(mean_var > 0.0) || !std::isfinite(mean_var)) {
         mean_var = 1e-6;
