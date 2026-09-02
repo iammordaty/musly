@@ -17,11 +17,13 @@
 #include <cstdint>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <algorithm>
 #include <limits>
 #include <map>
 #include <random>
 #include <set>
+#include <vector>
 #include <Eigen/Core>
 
 #define MUSLY_SUPPORT_STDIO
@@ -436,49 +438,38 @@ tracks_add(collection_file& cf, std::string directory_or_file, std::string exten
     if (!fi.get_nextfilename(afile)) {
         std::cout << "No files found while scanning: " <<
                 directory_or_file << std::endl;
+        return;
     }
-    else {
-        int buffersize = musly_track_binsize(mj);
+
+    // Collect and sort so collection order is independent of readdir and of
+    // OpenMP scheduling. Mutual Proximity (and track ids) depend on that
+    // order, so unsorted parallel appends make similarity non-reproducible.
+    std::vector<std::string> files;
+    do {
+        files.push_back(afile);
+    } while (fi.get_nextfilename(afile));
+    std::sort(files.begin(), files.end());
+
+    int buffersize = musly_track_binsize(mj);
+    std::vector<std::vector<unsigned char> > serialized(files.size());
+    std::vector<int> status(files.size(), -1);  // -1 skip, 0 ok, 1 fail
+
 #ifdef _OPENMP
-        // collect all file names in a vector first
-        std::vector<std::string> files;
-        do {
-            files.push_back(afile);
-        } while (fi.get_nextfilename(afile));
-        #pragma omp parallel if (files.size() > 1)
+    #pragma omp parallel if (files.size() > 1)
 #endif
-        {
-        unsigned char* buffer =
-                new unsigned char[buffersize];
+    {
+        unsigned char* buffer = new unsigned char[buffersize];
         musly_track* mt = musly_track_alloc(mj);
 #ifdef _OPENMP
-        // do a parallel for loop over the collected file names
-        // use a dynamic schedule because computation may differ per file
         #pragma omp for schedule(dynamic)
+#endif
         for (int i = 0; i < (int)files.size(); i++) {
-            // set file to files[i] for the loop body
-            std::string& file = files[i];
-#else
-        // do a while loop over the fileiterator
-        int i = 0;
-        do {
-            // set file to our existing afile for the loop body
-            std::string& file = afile;
-#endif
+            const std::string& file = files[i];
             if (cf.contains_track(file)) {
-#ifdef _OPENMP
-                #pragma omp critical
-#endif
-                {
-                std::cout << "Skipping already analyzed [" << i+1 << "]: "
-                        << limit_string(file, 60) << std::endl;
-                }  // pragma omp critical
+                status[i] = -1;
                 continue;
             }
-#ifndef _OPENMP
-            std::cout << "Analyzing [" << i+1 << "]: "
-                    << limit_string(file, 60) << std::flush;
-#endif
+
             // Decode a generous centered window; timbre/timbre2 narrow it
             // down to its centered 60%, which lands on 180 seconds for
             // anything longer than five minutes.
@@ -492,35 +483,38 @@ tracks_add(collection_file& cf, std::string directory_or_file, std::string exten
                 excerpt_start,
                 mt
             );
-#ifdef _OPENMP
-            #pragma omp critical
-            {
-            std::cout << "Analyzing [" << i+1 << "]: "
-                    << limit_string(file, 60);
-#endif
             if (ret == 0) {
                 int serialized_buffersize =
                         musly_track_tobin(mj, mt, buffer);
                 if (serialized_buffersize == buffersize) {
-                    cf.append_track(file, buffer, buffersize);
-                    std::cout << " - [OK]" << std::endl;
+                    serialized[i].assign(buffer, buffer + buffersize);
+                    status[i] = 0;
                 } else {
-                    std::cout << " - [FAILED]." << std::endl;
+                    status[i] = 1;
                 }
-
             } else {
-                std::cout << " - [FAILED]." << std::endl;
+                status[i] = 1;
             }
-#ifdef _OPENMP
-            }  // pragma omp critical
-        }  // for loop
-#else
-            i++;
-        } while (fi.get_nextfilename(afile));
-#endif
+        }
         delete[] buffer;
         musly_track_free(mt);
-        }  // pragma omp parallel
+    }
+
+    // Append in sorted index order after analysis finishes.
+    for (int i = 0; i < (int)files.size(); i++) {
+        if (status[i] < 0) {
+            std::cout << "Skipping already analyzed [" << i+1 << "]: "
+                    << limit_string(files[i], 60) << std::endl;
+            continue;
+        }
+        std::cout << "Analyzing [" << i+1 << "]: "
+                << limit_string(files[i], 60);
+        if (status[i] == 0) {
+            cf.append_track(files[i], serialized[i].data(), buffersize);
+            std::cout << " - [OK]" << std::endl;
+        } else {
+            std::cout << " - [FAILED]." << std::endl;
+        }
     }
 }
 
@@ -756,7 +750,8 @@ write_mirex_sparse(
         std::vector<std::string>& tracks_files,
         const std::string& file,
         const std::string& method,
-        int k)
+        int k,
+        std::vector<int>& artists)
 {
     std::ofstream f(file.c_str());
     if (f.fail()) {
@@ -768,40 +763,40 @@ write_mirex_sparse(
             method << std::endl;
 
     k = std::min(k, (int)tracks.size());
-    std::vector<int> artists_null; // disable artist filtering
 
     std::vector<musly_trackid> trackids(tracks.size());
     for (musly_trackid i = 0; i < (int)trackids.size(); i++) {
         trackids[i] = i;
     }
 
+    // Buffer lines by query index so OpenMP does not scramble output order.
+    std::vector<std::string> lines(tracks.size());
+
 #ifdef _OPENMP
     #pragma omp parallel for schedule(static)
 #endif
     for (int i = 0; i < (int)tracks.size(); i++) {
-        // compute k nearest neighbors
         std::vector<similarity_knn> track_idx = compute_similarity(
-                mj, k, artists_null,
+                mj, k, artists,
                 i, tracks, trackids);
         if (track_idx.size() == 0) {
             continue;
         }
 
-#ifdef _OPENMP
-        #pragma omp critical
-        {
-#endif
-        // write to file
-        f << tracks_files[i];
+        std::ostringstream row;
+        row << tracks_files[i];
         int n = (int)track_idx.size();
         for (int j = 0; j < n; j++) {
             int tid = track_idx[j].first;
-            f << "\t" << tracks_files[tid] << "," << track_idx[j].second;
+            row << "\t" << tracks_files[tid] << "," << track_idx[j].second;
         }
-        f << std::endl;
-#ifdef _OPENMP
+        lines[i] = row.str();
+    }
+
+    for (int i = 0; i < (int)lines.size(); i++) {
+        if (!lines[i].empty()) {
+            f << lines[i] << std::endl;
         }
-#endif
     }
 
     f.close();
@@ -1326,6 +1321,17 @@ main(int argc, char *argv[])
         } else if (po.get_action() == "m" || po.get_action() == "s") {
             std::string file = po.get_option_str(po.get_action());
 
+            // Optional artist filter (same path field as for '-e').
+            int f = po.get_option_int("f");
+            std::vector<int> artists;
+            std::map<int, std::string> artist_ids;
+            if (f >= 0) {
+                field_from_strings(tracks_files, f, artist_ids, artists);
+                std::cout << "Artist filter active (-f)." << std::endl
+                        << "Found " << artist_ids.size() << " artists."
+                        << std::endl;
+            }
+
             // compute a similarity matrix and write MIREX formatted to the
             // given file
             std::cout << "Computing and writing similarity matrix to: " << file
@@ -1335,7 +1341,8 @@ main(int argc, char *argv[])
                 ret = write_mirex_full(tracks, tracks_files, file, cf.get_method());
             } else {
                 int k = po.get_option_int("k");
-                ret = write_mirex_sparse(tracks, tracks_files, file, cf.get_method(), k);
+                ret = write_mirex_sparse(tracks, tracks_files, file,
+                        cf.get_method(), k, artists);
             }
             if (ret == 0) {
                 std::cout << "Success." << std::endl;

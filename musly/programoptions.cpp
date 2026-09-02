@@ -259,9 +259,10 @@ cout << "  -e NUM | -E  perform a basic kNN (k-nearest neighbor) music genre" <<
      << "               file. The parameter k is set with option '-k'. The" << endl
      << "               genre is inferred from the path element at position NUM." << endl
      << "               The genre position within the path is guessed with '-E'." << endl;
-cout << "  -f NUM       Use an artist filter for the evaluation ('-e'). The " << endl
-     << "               artist name is inferred from the path element at" << endl
-     << "               position NUM." << endl
+cout << "  -f NUM       Use an artist filter for the evaluation ('-e') and" << endl
+     << "               for sparse similarity matrices ('-s'). The artist" << endl
+     << "               name is inferred from the path element at position" << endl
+     << "               NUM. Neighbors by the same artist are skipped." << endl
      << "               DEFAULT: -1 (No artist filter)" << endl;
 cout << "  -m FILE      compute the full similarity matrix for the specified" << endl
      << "               collection and write it to FILE. It is written in MIREX" << endl

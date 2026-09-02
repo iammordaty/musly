@@ -676,6 +676,95 @@ void test_excerpt_focus(std::string method) {
 }
 
 
+/** Level-1 similarity regression: synthetic families must retrieve each other.
+ * Four families of ten tracks share a dominant tone; within-family P@3 should
+ * stay high, distances must stay finite, and two runs must match exactly.
+ */
+void test_synthetic_family_retrieval(std::string method) {
+    if ((method != "timbre") && (method != "timbre2")) {
+        return;
+    }
+    std::cout << "Testing synthetic family retrieval for \"" << method
+            << "\"..." << std::endl;
+
+    const int n_families = 4;
+    const int per_family = 10;
+    const int n = n_families * per_family;
+    const int len = 22050 * 5;
+    const float family_hz[4] = {220.0f, 440.0f, 880.0f, 1320.0f};
+
+    musly_jukebox* box = musly_jukebox_poweron(method.c_str(), NULL);
+    REQUIRE("poweron", box != NULL);
+
+    musly_track* tracks[40];
+    musly_trackid ids[40];
+    float* pcm = new float[len];
+    for (int i = 0; i < n; i++) {
+        int fam = i / per_family;
+        int member = i % per_family;
+        float hz = family_hz[fam] * (1.0f + 0.01f * member);
+        float amp = 0.4f + 0.05f * member;
+        for (int s = 0; s < len; s++) {
+            float t = 2.0f * (float)M_PI * s / 22050.0f;
+            // Shared family partials plus a weak member-specific overtone.
+            pcm[s] = amp * std::sin(t * hz)
+                    + 0.15f * amp * std::sin(t * hz * 2.0f)
+                    + 0.05f * std::sin(t * (hz * 3.0f + 17.0f * member));
+        }
+        tracks[i] = musly_track_alloc(box);
+        REQUIRE("family track analyzed",
+                musly_track_analyze_pcm(box, pcm, len, tracks[i]) == 0);
+    }
+    REQUIRE("setmusicstyle", musly_jukebox_setmusicstyle(box, tracks, n) == 0);
+    REQUIRE("addtracks", musly_jukebox_addtracks(box, tracks, ids, n, true) == 0);
+
+    float sims[40];
+    float sims_repeat[40];
+    int within_hits = 0;
+    int queries = 0;
+    for (int q = 0; q < n; q++) {
+        REQUIRE("similarity", musly_jukebox_similarity(box, tracks[q], ids[q],
+                tracks, ids, n, sims) == 0);
+        REQUIRE("similarity repeat", musly_jukebox_similarity(box, tracks[q], ids[q],
+                tracks, ids, n, sims_repeat) == 0);
+        for (int j = 0; j < n; j++) {
+            REQUIRE("sim finite", std::isfinite(sims[j]));
+            REQUIRE("sim non-negative", sims[j] >= 0.0f);
+            REQUIRE("sim deterministic", sims[j] == sims_repeat[j]);
+        }
+        REQUIRE("self zero", sims[q] == 0.0f);
+
+        // Rank others by distance; count how many of top-3 share the family.
+        std::vector<std::pair<float, int> > order;
+        order.reserve(n - 1);
+        for (int j = 0; j < n; j++) {
+            if (j == q) {
+                continue;
+            }
+            order.push_back(std::make_pair(sims[j], j));
+        }
+        std::sort(order.begin(), order.end());
+        int fam = q / per_family;
+        int hits = 0;
+        for (int k = 0; k < 3 && k < (int)order.size(); k++) {
+            if (order[k].second / per_family == fam) {
+                hits++;
+            }
+        }
+        within_hits += hits;
+        queries++;
+    }
+    float p_at_3 = (float)within_hits / (float)(queries * 3);
+    REQUIRE("family P@3 above floor", p_at_3 >= 0.5f);
+
+    for (int i = 0; i < n; i++) {
+        musly_track_free(tracks[i]);
+    }
+    delete[] pcm;
+    musly_jukebox_poweroff(box);
+}
+
+
 int main() {
     musly_debug(1);  // set verbosity level to logERROR
 
@@ -696,6 +785,7 @@ int main() {
         test_method(methods[i]);
         test_degenerate_and_quality(methods[i]);
         test_excerpt_focus(methods[i]);
+        test_synthetic_family_retrieval(methods[i]);
     }
 
     SUMMARY();
