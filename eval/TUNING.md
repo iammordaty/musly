@@ -1,5 +1,10 @@
 # Low-risk tuning experiments (timbre2 baseline)
 
+> Historical document: this is the round-1 experiment catalogue, written when
+> the baseline was `timbre2` with shrinkage λ=0.1 and no variant was merged.
+> It does not describe the current method set — λ=0.15 is now part of `timbre2`
+> and the CSLS path is gone. Outcomes are in `TUNING_RESULTS.md`.
+
 Baseline run: `fma_small_20260831T103326Z` — P@10 **0.360**, hubness skew **2.76**,
 perturbation vol_m12 **0.60**, vol_p6 **0.10** (timbre2).
 

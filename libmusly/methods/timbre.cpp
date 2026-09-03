@@ -36,8 +36,7 @@ timbre::timbre() :
 {
 }
 
-timbre::timbre(int mfcc_bins_, bool use_deltas_, float delta_scale_,
-        float shrinkage_lambda_, bool csls_pre_mp_) :
+timbre::timbre(int mfcc_bins_, bool use_deltas_, float shrinkage_lambda_) :
 
         // initialize method configuration parameters
         sample_rate(22050),
@@ -54,9 +53,7 @@ timbre::timbre(int mfcc_bins_, bool use_deltas_, float delta_scale_,
         focus_fraction(0.6f),
         min_analysis_length(window_size
                 + (feature_dim + 1) * (int)(window_size * hop)),
-        delta_scale(delta_scale_),
         shrinkage_lambda(shrinkage_lambda_),
-        csls_pre_mp(csls_pre_mp_),
 
         // spectra and filters
         ps(windowfunction::hann(window_size), hop),
@@ -217,7 +214,7 @@ timbre::analyze_track(
             Eigen::MatrixXf deltas = compute_deltas(mfcc_representation);
             Eigen::MatrixXf combined(feature_dim, mfcc_representation.cols());
             combined.topRows(mfcc_bins) = mfcc_representation;
-            combined.bottomRows(mfcc_bins) = delta_scale * deltas;
+            combined.bottomRows(mfcc_bins) = deltas;
             feature_blocks.push_back(combined);
         } else {
             feature_blocks.push_back(mfcc_representation);
@@ -349,13 +346,9 @@ timbre::similarity(
         other_positions[i] = idpool.position_of(trackids[i]);
     }
 
-    // - call mp.normalize with these positions, optionally with the
-    //   CSLS hub penalty folded into the MP reference distributions
-    int res = csls_pre_mp
-            ? mp.normalize_csls(seed_position, other_positions, length,
-                    similarities)
-            : mp.normalize(seed_position, other_positions, length,
-                    similarities);
+    // - call mp.normalize with these positions
+    int res = mp.normalize(seed_position, other_positions, length,
+            similarities);
     delete[] other_positions;
 
     return res;

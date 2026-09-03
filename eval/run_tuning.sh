@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
-# Run the three timbre2 tuning variants and compare to the pinned baseline.
+# Run registered timbre2 tuning variants and compare them to a baseline run.
+#
+# No tuning variant is registered in the library right now: rounds 1 and 2 are
+# closed and the winning configuration lives in timbre2 itself. Pass the names
+# of freshly registered variants in VARIANTS to use this runner again, e.g.
+#   VARIANTS="timbre2_foo" eval/run_tuning.sh
+# A variant that only changes query-time behaviour can skip re-analysis by
+# cloning an existing collection with eval/clone_collection.py.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-BASELINE_RUN="${BASELINE_RUN:-$SCRIPT_DIR/results/fma_small_20260831T103326Z}"
-# Only timbre2_cs is still registered; d05/sh15 were reverted after evaluation
-# (eval/TUNING_RESULTS.md). Re-register them to run those arms again.
-VARIANTS="${VARIANTS:-timbre2_cs}"
+BASELINE_RUN="${BASELINE_RUN:-$SCRIPT_DIR/results/lambda_20260903T071915Z/fma_small_20260903T071915Z}"
+VARIANTS="${VARIANTS:-}"
 SKIP_DOCKER="${SKIP_DOCKER:-0}"
 PYTHON="$SCRIPT_DIR/.venv/bin/python"
+
+if [[ -z "${VARIANTS// }" ]]; then
+  echo "No variants requested: set VARIANTS to registered method names." >&2
+  exit 1
+fi
 
 if [[ "$SKIP_DOCKER" != "1" ]]; then
   echo "=== Rebuild Docker image (includes tuning methods) ==="
@@ -20,43 +30,7 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 TUNING_RUN="$SCRIPT_DIR/results/tuning_${STAMP}"
 mkdir -p "$TUNING_RUN"
 
-# timbre2_cs: query-time CSLS only — clone baseline features, skip re-analysis.
-if [[ " $VARIANTS " == *" timbre2_cs "* ]]; then
-  echo ""
-  echo "=== Benchmark: timbre2_cs (clone + dump) ==="
-  mkdir -p "$TUNING_RUN/timbre2_cs"
-  "$PYTHON" "$SCRIPT_DIR/clone_collection.py" \
-    "$BASELINE_RUN/timbre2/collection.musly" \
-    "$TUNING_RUN/timbre2_cs/collection.musly" \
-    timbre2_cs
-  CHECK_DETERMINISM=0 "$SCRIPT_DIR/dump_metrics_only.sh" \
-    timbre2_cs "$TUNING_RUN" "$TUNING_RUN/timbre2_cs/collection.musly"
-
-  echo "=== Perturbations: timbre2_cs (clone + dump) ==="
-  PERT_OUT="$SCRIPT_DIR/results/perturbations"
-  PERT="$SCRIPT_DIR/data/perturbations"
-  mkdir -p "$PERT_OUT/timbre2_cs"
-  "$PYTHON" "$SCRIPT_DIR/clone_collection.py" \
-    "$PERT_OUT/timbre2/collection.musly" \
-    "$PERT_OUT/timbre2_cs/collection.musly" \
-    timbre2_cs
-  rm -f "$PERT_OUT/timbre2_cs/collection.musly.jbox"
-  # shellcheck source=lib.sh
-  source "$SCRIPT_DIR/lib.sh"
-  TREE="$PERT"
-  RUN_DIR="$PERT_OUT"
-  resolve_musly
-  cs_coll="$PERT_OUT/timbre2_cs/collection.musly"
-  cs_dump="$PERT_OUT/timbre2_cs/dump.txt"
-  musly_run "$PERT_OUT" -- -c "$cs_coll" -J -s "$cs_dump" -k 50
-  "$PYTHON" "$SCRIPT_DIR/score_perturbations.py" \
-    --dump "$cs_dump" \
-    --pairs "$PERT/pairs.csv" \
-    --out-json "$PERT_OUT/timbre2_cs/perturbation_metrics.json"
-fi
-
 for method in $VARIANTS; do
-  [[ "$method" == "timbre2_cs" ]] && continue
   echo ""
   echo "=== Benchmark: $method ==="
   METHODS="$method" OUT_ROOT="$TUNING_RUN" CHECK_DETERMINISM=0 \

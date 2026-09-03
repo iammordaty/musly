@@ -45,9 +45,7 @@ protected:
     const int feature_dim;
     const float focus_fraction;
     const int min_analysis_length;
-    const float delta_scale;
     const float shrinkage_lambda;
-    const bool csls_pre_mp;
 
     int track_mu;
     int track_covar;
@@ -74,11 +72,11 @@ protected:
     select_frames(const Eigen::MatrixXf& features,
             const Eigen::MatrixXf& power_spectrum) const;
 
-    /** Construct a timbre method with optional delta features.
-     * Used by subclasses (e.g. timbre2) and tuning variants.
+    /** Construct a timbre method with optional delta features and a
+     * configurable covariance shrinkage intensity. Used by subclasses
+     * (e.g. timbre2).
      */
-    timbre(int mfcc_bins, bool use_deltas, float delta_scale = 1.0f,
-            float shrinkage_lambda = 0.1f, bool csls_pre_mp = false);
+    timbre(int mfcc_bins, bool use_deltas, float shrinkage_lambda = 0.1f);
 
 public:
     timbre();

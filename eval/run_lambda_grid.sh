@@ -1,16 +1,27 @@
 #!/usr/bin/env bash
 # Tuning round 2: covariance shrinkage grid on top of the CSLS hub penalty.
 #
-# Six arms in a 3x2 design (lambda in {0.10, 0.20, 0.25}) x (CSLS off/on):
+# HISTORICAL RECORD. This script describes the arms as they were registered
+# during round 2. None of the timbre2_* variants nor the CSLS code path exists
+# any more: lambda=0.15 won and is now built into timbre2, and the CSLS
+# normalizer was removed. Re-running this requires re-adding those variants.
+# Results: eval/results/lambda_20260903T071915Z, write-up in TUNING_RESULTS.md.
+#
+# Eight arms in a 4x2 design (lambda in {0.10, 0.15, 0.20, 0.25}) x (CSLS off/on):
 #
 #   lambda  no CSLS          with CSLS
 #   0.10    timbre2          timbre2_cs
+#   0.15    timbre2_sh15     timbre2_cs_sh15
 #   0.20    timbre2_sh20     timbre2_cs_sh20
 #   0.25    timbre2_sh25     timbre2_cs_sh25
 #
+# lambda=0.15 is measured directly rather than interpolated: round 1 showed it
+# is the only value known to move hub skewness (2.758 -> 2.491) at a P@10 cost
+# that stays inside the neutrality band.
+#
 # Shrinkage changes the stored features, CSLS is query-time only, so each
-# lambda needs exactly one analysis pass and its CSLS partner is a header
-# rewrite away (eval/clone_collection.py). Three analyses, three clones.
+# lambda needs exactly one analysis pass and its partner is a header rewrite
+# away (eval/clone_collection.py). Four analyses, four clones.
 #
 # A fresh timbre2 arm is mandatory rather than reusing the pinned baseline:
 # the resampler clipping fix changed the features of most tracks, so the old
@@ -23,13 +34,14 @@ PYTHON="${PYTHON:-$SCRIPT_DIR/.venv/bin/python}"
 SKIP_DOCKER="${SKIP_DOCKER:-0}"
 
 # Arms that need a full analysis pass, and the clone derived from each.
-FULL_ARMS=(timbre2 timbre2_cs_sh20 timbre2_cs_sh25)
+FULL_ARMS=(timbre2 timbre2_cs_sh15 timbre2_cs_sh20 timbre2_cs_sh25)
 declare -A CLONE_OF=(
   [timbre2_cs]=timbre2
+  [timbre2_sh15]=timbre2_cs_sh15
   [timbre2_sh20]=timbre2_cs_sh20
   [timbre2_sh25]=timbre2_cs_sh25
 )
-CLONE_ARMS=(timbre2_cs timbre2_sh20 timbre2_sh25)
+CLONE_ARMS=(timbre2_cs timbre2_sh15 timbre2_sh20 timbre2_sh25)
 BASE_ARM="timbre2"
 
 if [[ "$SKIP_DOCKER" != "1" ]]; then

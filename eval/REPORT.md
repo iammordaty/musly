@@ -84,7 +84,7 @@ eval/.venv/bin/python eval/make_perturbations.py --tree eval/data/tree --n 200
 eval/run_perturbations.sh timbre
 eval/run_perturbations.sh timbre2
 
-# Gain-invariance check (200 sources, ~10 min for three methods)
+# Gain-invariance check (200 sources, ~7 min for both methods)
 eval/.venv/bin/python eval/make_gain_fixtures.py
 eval/run_gaincheck.sh
 
@@ -98,32 +98,50 @@ eval/.venv/bin/python eval/regression.py \
   --baseline eval/baselines/fma_small.json
 ```
 
-The pinned baseline lives in `eval/baselines/fma_small.json` (run
-`fma_small_20260831T103326Z`). Re-pin only after an intentional accepted
-change: copy fresh `metrics.json` values, set `environment.manifest_sha256`
-from `run.json` / `manifest.json`, and refresh the `ci` bands if needed.
-
-> **The pin is stale.** The resampler clipping fix (`libmusly/resampler.cpp`,
-> see `eval/TUNING_RESULTS.md` experiment A2) changes the features of every
-> track whose decoded signal exceeds full scale, which on FMA-small is most of
-> them. `environment.dump_sha256` will therefore not reproduce, and the metric
-> bands are unverified against the fixed code. The fix was accepted without a
-> validation run as an obvious bug fix; the next full FMA-small run should be
-> used to re-pin. Until then treat `regression.py` failures on this pin as
-> expected rather than as a regression.
+The pinned baseline lives in `eval/baselines/fma_small.json`, pinned from the
+tuning round-2 winner (run `lambda_20260903T071915Z`, arm `timbre2_sh15`, whose
+configuration is what `timbre2` does now). Re-pin only after an intentional
+accepted change: copy fresh `metrics.json` values, set
+`environment.manifest_sha256` from `run.json` / `manifest.json`, and recentre
+the `ci` bands.
 
 ## Results
 
-Run: `eval/results/fma_small_20260831T103326Z`  
-Dataset: FMA-small, 7994 analyzed / 8000 prepared, artist filter on, k=100  
-Manifest: `6bf64128a580fe4d54b32d9e3d410b2f028126a055b4e3a88e6d3f65ee31a3ec`
+Dataset for every run below: FMA-small, 7994 analyzed / 8000 prepared, artist
+filter on, k=100, manifest
+`6bf64128a580fe4d54b32d9e3d410b2f028126a055b4e3a88e6d3f65ee31a3ec`.
 
-### Genre ranking (artist-filtered)
+### Current method state
+
+`timbre2` ships covariance shrinkage λ=0.15, chosen in tuning round 2
+(`eval/TUNING_RESULTS.md`). Numbers from run
+`lambda_20260903T071915Z/fma_small_20260903T071915Z`:
+
+| Method | P@1 | P@5 | P@10 | P@20 | MAP@100 | knn@5 | hub skew | hub max | AUC |
+|--------|-----|-----|------|------|---------|-------|----------|---------|-----|
+| timbre2 (λ=0.15, current) | 0.379 | 0.365 | 0.354 | 0.338 | 0.0154 | 0.437 | 2.48 | 82 | 0.575 |
+| timbre2 (λ=0.10, previous default) | 0.391 | 0.373 | 0.360 | 0.345 | 0.0160 | 0.442 | 2.75 | 95 | 0.579 |
+
+λ=0.15 costs 0.60 pp of P@10 (cluster-bootstrap CI [−0.76, −0.44] pp) and buys
+an improvement on **both** hubness statistics; the full trade-off table for all
+eight grid arms is in `eval/TUNING_RESULTS.md`.
+
+### Genre ranking, timbre vs timbre2 (artist-filtered)
+
+Run: `eval/results/fma_small_20260831T103326Z`
+
+> These two rows predate the resampler clipping fix (commit `7d3c471`), so they
+> are not bit-comparable with the round-2 numbers above: the fix changed the
+> features of every track whose decoded signal exceeds full scale. In aggregate
+> it turned out to be metric-neutral — the same `timbre2` configuration
+> (λ=0.10) scores P@10 0.3604 before the fix and 0.3602 after, with hub
+> skewness 2.758 → 2.746 and hub max 96 → 95 — so the comparison below still
+> holds directionally, but `timbre` has not been re-measured on fixed features.
 
 | Method | P@1 | P@5 | P@10 | P@20 | MAP@100 | knn@5 | hubness skew | AUC |
 |--------|-----|-----|------|------|---------|-------|--------------|-----|
 | timbre | 0.377 | 0.357 | 0.347 | 0.334 | 0.0153 | 0.425 | 2.23 | 0.581 |
-| timbre2 | 0.391 | 0.373 | 0.360 | 0.345 | 0.0160 | 0.443 | 2.76 | 0.579 |
+| timbre2 (λ=0.10) | 0.391 | 0.373 | 0.360 | 0.345 | 0.0160 | 0.443 | 2.76 | 0.579 |
 
 Paired `timbre` → `timbre2` on P@10 (`compare.json`):
 
@@ -140,8 +158,9 @@ Siblings excluded (current default):
 
 | Method | overall top-1 | vol_m12 | vol_p6 | mp3_64k | lowpass8k | rate16k | silence_pre20 | mid15s | loop4m |
 |--------|---------------|---------|--------|---------|-----------|---------|---------------|--------|--------|
-| timbre | 0.853 | 1.00 | 1.00 | 0.73 | 1.00 | 0.11 | 1.00 | 0.99 | 1.00 |
-| timbre2 | 0.845 | 1.00 | 1.00 | 0.65 | 1.00 | 0.13 | 1.00 | 0.99 | 1.00 |
+| timbre2 (λ=0.15, current) | 0.844 | 1.00 | 1.00 | 0.67 | 1.00 | 0.11 | 0.99 | 0.99 | 1.00 |
+| timbre2 (λ=0.10, pre-fix run) | 0.845 | 1.00 | 1.00 | 0.65 | 1.00 | 0.13 | 1.00 | 0.99 | 1.00 |
+| timbre (pre-fix run) | 0.853 | 1.00 | 1.00 | 0.73 | 1.00 | 0.11 | 1.00 | 0.99 | 1.00 |
 
 **Why these numbers replaced the earlier ones.** The collection contains all
 eight variants of every source track, so two near-identical variants compete
@@ -168,14 +187,19 @@ decimals, after the resampler clipping fix described in
 Against the written decision rules:
 
 1–3 (ranking significance / CI / consistent P@K sign): **pass** for `timbre2`
-4 (hubness): **fail** — skewness rose 2.23 → 2.76, max k-occurrence 69 → 96  
-5 (perturbations): **pass** — 0.845 vs 0.853 overall, a 0.8 pp gap driven by
-   `mp3_64k` (0.65 vs 0.73); every other variant is tied at ≈ 1.00
+4 (hubness): **partially addressed** — deltas raised skewness 2.23 → 2.76 and
+   max k-occurrence 69 → 96; shrinkage λ=0.15 brings the shipped method back to
+   2.48 / 82, still above `timbre` but roughly half the regression  
+5 (perturbations): **pass** — 0.844 for the shipped method against 0.853 for
+   `timbre`, the gap driven by `mp3_64k` (0.67 vs 0.73); every other variant is
+   tied at ≈ 1.00
 
 **Conclusion:** MFCC deltas improve artist-filtered genre ranking by a small
-but statistically solid margin (≈ +1.3 pp P@10). That is not a blanket quality
-win: hubness got worse. Keep `timbre2` as default for retrieval-oriented use
-and watch hubness on large collections.
+but statistically solid margin (≈ +1.3 pp P@10 at λ=0.10), and the shipped
+configuration trades 0.6 pp of that back for a hubness improvement on both
+statistics (≈ +0.7 pp P@10 over `timbre`, skewness 2.48 vs 2.23). That is a
+deliberate trade, not a blanket quality win: hubness is still worse than
+`timbre`, so watch it on large collections.
 
 Stage-3 robustness is in better shape than the first version of this report
 claimed: gain, silence padding, looping, cropping and lowpass are all at

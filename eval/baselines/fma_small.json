@@ -1,5 +1,5 @@
 {
-  "description": "Pinned FMA-small baseline from run fma_small_20260831T103326Z (timbre2, artist filter, k=100).",
+  "description": "Pinned FMA-small baseline from run lambda_20260903T071915Z, arm timbre2_sh15 (tuning round 2 winner). That arm's configuration \u2014 MFCC+deltas with covariance shrinkage lambda=0.15 and no CSLS \u2014 is what timbre2 does now, and the merged method reproduces its features bit-for-bit (verified with musly -d).",
   "environment": {
     "method": "timbre2",
     "manifest_sha256": "6bf64128a580fe4d54b32d9e3d410b2f028126a055b4e3a88e6d3f65ee31a3ec",
@@ -7,27 +7,43 @@
     "artist_filter": true,
     "k": 100,
     "n_analyzed": 7994,
-    "run_id": "fma_small_20260831T103326Z",
-    "dump_sha256": "39d9f776b0a814afb72cf5770597ce152726fd91706cae9640178f9e2f7c17ea"
+    "run_id": "lambda_20260903T071915Z/fma_small_20260903T071915Z",
+    "arm": "timbre2_sh15",
+    "dump_sha256": "2e9f6be91ab0a12ee6f1a74bca09ba2ca2adcd5142d4b122ea09eb9f93283952",
+    "ffmpeg": "ffmpeg version 9.0.1 Copyright (c) 2000-2026 the FFmpeg developers",
+    "omp_num_threads": 1
   },
   "metrics": {
-    "P@1": 0.3912934701025769,
-    "P@5": 0.3728046034525894,
-    "P@10": 0.36038278709031774,
-    "P@20": 0.34542782086564927,
-    "MAP@100": 0.015960584517661632,
-    "NDCG@10": 0.36689739770557267,
-    "NDCG@100": 0.31162609843753264,
-    "MRR": 0.5406550738210731,
-    "knn_acc@5": 0.44308231173380036,
-    "hubness_skewness_k5": 2.75835014762528,
-    "auc_same_genre": 0.5786360493986258
+    "P@1": 0.3794095571678759,
+    "P@5": 0.3648736552414311,
+    "P@10": 0.35422817112834626,
+    "P@20": 0.3381098323742807,
+    "MAP@100": 0.015354581138566406,
+    "NDCG@10": 0.3598458434741995,
+    "NDCG@100": 0.305114347956578,
+    "MRR": 0.5326227009168533,
+    "knn_acc@5": 0.4364523392544408,
+    "hubness_skewness_k5": 2.4824151025656613,
+    "hubness_max_k5": 82.0,
+    "auc_same_genre": 0.5745294583588267
   },
   "ci": {
-    "P@10": [0.350, 0.370],
-    "MAP@100": [0.014, 0.018],
-    "knn_acc@5": [0.420, 0.470],
-    "auc_same_genre": [0.560, 0.600]
+    "P@10": [
+      0.344,
+      0.364
+    ],
+    "MAP@100": [
+      0.0134,
+      0.0174
+    ],
+    "knn_acc@5": [
+      0.412,
+      0.462
+    ],
+    "auc_same_genre": [
+      0.555,
+      0.595
+    ]
   },
-  "notes": "Pinned after the first full FMA-small harness run. regression.py fails if P@10 drops by more than 0.005 absolute or a metric leaves its ci band, provided the manifest fingerprint still matches."
+  "notes": "regression.py fails if P@10 drops by more than 0.005 absolute or a metric leaves its ci band, provided the manifest fingerprint and method still match. Band widths are carried over from the previous pin and recentred on the new values. Both hubness statistics are recorded for reference but deliberately have no ci band: no pre-agreed tolerance exists for them, and inventing one after seeing the grid would be a threshold fitted to the result."
 }

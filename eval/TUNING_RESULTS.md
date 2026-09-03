@@ -1,7 +1,20 @@
-# Tuning results (timbre2 variants vs pinned baseline)
+# Tuning results (timbre2)
 
-Baseline run: `eval/results/fma_small_20260831T103326Z` (FMA-small, 7994 tracks,
-k=100, artist-filtered). Perturbations: 200 originals × 8 variants.
+Learning log of the tuning rounds, kept so the refuted hypotheses stay on
+record. Round 1 and experiment A are below; round 2 closed the stage and its
+outcome is what the code does now.
+
+**Current state after round 2.** `timbre2` = 25 MFCCs + first-order deltas,
+covariance shrinkage λ=0.15, Mutual Proximity normalization, no CSLS. The
+library registers exactly `mandelellis`, `timbre`, `timbre2`. The pinned
+baseline (`eval/baselines/fma_small.json`) comes from the round-2 winner.
+
+**Round 1 numbers are not comparable to round 2.** They predate the resampler
+clipping fix (commit `7d3c471`, experiment A2), which changed the features of
+most tracks. Every round-1 table below is on the old features.
+
+Round 1 baseline run: `eval/results/fma_small_20260831T103326Z` (FMA-small,
+7994 tracks, k=100, artist-filtered). Perturbations: 200 originals × 8 variants.
 Experiment catalogue and rationale: `eval/TUNING.md`.
 
 ## Reference numbers
@@ -167,20 +180,21 @@ sit within 1.2 pp of each other on the corrected metric — the perturbation sui
 does not separate them, which the confounded numbers made look otherwise
 (`timbre2_cs` "+1.9 pp" is reversed to −0.4 pp once corrected).
 
-### Status of the resampler fix: kept, unvalidated
+### Status of the resampler fix: kept, and later measured
 
 The fix is correct and removes a real bug, but experiment A also shows it was
 not what held `vol_p6` back — on the corrected metric `vol_p6` was already at
 0.995 before it.
 
-It was **accepted without a ranking run** as an obvious bug fix. Two open
-consequences follow from that decision:
+It was **accepted without a ranking run** as an obvious bug fix, which left its
+effect on P@10 and hubness unmeasured. Round 2 closed that gap incidentally: its
+`timbre2` arm is the same configuration as the round-1 baseline (λ=0.10), run on
+fixed features. The aggregate effect is nil — P@10 0.3604 → 0.3602, knn@5
+0.4431 → 0.4423, hub skewness 2.758 → 2.746, hub max 96 → 95, AUC 0.5786 in
+both. Per-track features did change; the retrieval quality did not.
 
-- Its effect on P@10 and hubness is unmeasured. It changes the features of
-  every track whose decoded signal exceeds full scale, which on FMA-small is
-  most of them, so the effect is not necessarily small.
-- `eval/baselines/fma_small.json` no longer reproduces (`dump_sha256`, and the
-  metric bands are unverified). Re-pin from the next full run.
+The pin was re-created from the round-2 winner, so `dump_sha256` and the metric
+bands are valid again.
 
 ## Runtime behaviour that looks like a hang (it is not)
 
@@ -220,7 +234,7 @@ Two side findings from investigating it:
   directories, since `run_benchmark.sh` writes `<run>/fma_small_<stamp>/<method>`
   while the clone path writes `<run>/<method>`.
 
-## Recommendation
+## Round 1 recommendation (superseded by round 2)
 
 **Keep:** `mutualproximity::normalize_csls()` and the `csls_pre_mp` flag. It is
 the only change that improves ranking, perturbations and hub dominance at once,
@@ -254,3 +268,102 @@ at −0.62 pp P@10 it is not worth shipping on its own. After the revert
 3. **Do not** treat `rate16k` as a tuning target. It is 0.0 top-1 for every
    method including the fixed CSLS; that is a resampling/feature-extraction
    issue, not a scoring one.
+
+## Round 2 — λ × CSLS grid, and the decision that closed the stage
+
+Run: `eval/results/lambda_20260903T071915Z` (2026-09-03, 6 h 38 min,
+`OMP_NUM_THREADS=1`). Design: λ ∈ {0.10, 0.15, 0.20, 0.25} × CSLS {off, on}.
+λ changes the stored features and CSLS is query-time only, so the eight arms
+cost four analysis passes plus four collection-header clones.
+
+The baseline is the in-run `timbre2` arm, not the old pin: after the resampler
+fix the pinned run is a different feature set. λ=0.15 was measured directly
+rather than interpolated from 0.10/0.20/0.25, because round 1 had already shown
+it to be the only value that moved hub skewness.
+
+### All eight arms
+
+| arm | λ | CSLS | P@10 | ΔP@10 | CI95 of Δ | Wilcoxon p | hub skew | hub max | knn@5 | AUC | pert | mp3_64k | rate16k |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `timbre2` | 0.10 | no | 0.3602 | — | — | — | 2.746 | 95 | 0.442 | 0.579 | 0.843 | 0.650 | 0.110 |
+| `timbre2_cs` | 0.10 | yes | **0.3639** | +0.37 pp | [+0.08, +0.65] pp | 0.0039 | 2.898 | 70 | 0.448 | 0.585 | 0.839 | 0.620 | 0.110 |
+| `timbre2_sh15` | 0.15 | no | 0.3542 | −0.60 pp | [−0.76, −0.44] pp | 1.4e−10 | **2.482** | 82 | 0.436 | 0.575 | 0.844 | **0.665** | 0.110 |
+| `timbre2_cs_sh15` | 0.15 | yes | 0.3567 | −0.35 pp | [−0.66, −0.06] pp | 0.0064 | 2.765 | 62 | 0.441 | 0.580 | 0.839 | 0.630 | 0.110 |
+| `timbre2_sh20` | 0.20 | no | 0.3485 | −1.17 pp | [−1.41, −0.94] pp | 1.3e−23 | 2.291 | 69 | 0.432 | 0.572 | 0.842 | 0.665 | 0.110 |
+| `timbre2_cs_sh20` | 0.20 | yes | 0.3496 | −1.06 pp | [−1.39, −0.74] pp | 1.2e−13 | 2.536 | 59 | 0.437 | 0.576 | 0.835 | 0.620 | 0.105 |
+| `timbre2_sh25` | 0.25 | no | 0.3424 | −1.78 pp | [−2.06, −1.50] pp | 8.9e−37 | 2.146 | 60 | 0.423 | 0.569 | 0.838 | 0.660 | 0.100 |
+| `timbre2_cs_sh25` | 0.25 | yes | 0.3447 | −1.55 pp | [−1.91, −1.20] pp | 3.2e−25 | 2.388 | **55** | 0.428 | 0.574 | 0.833 | 0.615 | 0.100 |
+
+`pert` is the sibling-excluded overall top-1 (the corrected metric from
+experiment A3). Full per-arm metrics in
+`fma_small_20260903T071915Z/<arm>/metrics.json`, paired statistics in
+`compare_timbre2_vs_<arm>.json`, grid table in `summary.json`.
+
+### Decision
+
+The P@10 gate agreed before the run treats |ΔP@10| < 0.01 as neutral regardless
+of p-value, so the ranking metric admits four arms — `timbre2`, `timbre2_cs`,
+`timbre2_cs_sh15`, `timbre2_sh15` — and rejects both λ ≥ 0.20 rows as real
+regressions. Hubness then decides among the neutral arms, and both statistics
+count:
+
+- `timbre2_cs`: hub max 95 → 70 but skewness 2.746 → 2.898. A trade-off, not an
+  improvement.
+- `timbre2_cs_sh15`: lowest hub max of the neutral arms (62), skewness flat
+  (+0.019). Adding CSLS on top of λ=0.15 cancels exactly the skewness gain that
+  λ delivers.
+- `timbre2_sh15`: the only arm that improves **both** — skewness 2.746 → 2.482
+  and hub max 95 → 82.
+
+**Winner: λ=0.15, no CSLS**, merged into `timbre2`. The honest cost is a small
+but statistically real ranking loss: P@10 −0.60 pp (CI excludes zero),
+knn@5 −0.58 pp, AUC −0.41 pp. Against that: both hubness statistics improve and
+`mp3_64k` robustness rises 0.650 → 0.665, with the rest of the perturbation set
+unchanged. The tie-break for simplicity applies too — λ is a constructor
+argument, so the whole CSLS code path could be deleted.
+
+Verified after merging: `timbre2` reproduces the winning arm's features
+bit-for-bit (`musly -d` on five tracks, `gaussian.mu`, `gaussian.covar` and
+`covar_logdet` identical), which is why the pin reuses that arm's
+`dump_sha256`.
+
+### Hypotheses this round refuted
+
+- **"λ and CSLS are independent, so λ+CSLS keeps the CSLS ranking gain and takes
+  the λ skewness gain."** Wrong, and this was the premise of the whole round. At
+  every λ, adding CSLS raises skewness by +0.15…+0.24 and lowers hub max by
+  8–11. The two knobs reshape the same distribution instead of composing: CSLS
+  cuts the extreme tail (hub max) while tightening the bulk (skewness), which is
+  the opposite of what λ does.
+- **"CSLS is the change worth keeping"** (round 1 recommendation). Not confirmed
+  on fixed features: +0.37 pp P@10 is inside the neutrality band, skewness is
+  worse, and `mp3_64k` robustness drops 0.650 → 0.620. Its perturbation
+  advantage had already evaporated in experiment A3. Nothing was left to justify
+  a second normalization path, so `normalize_csls()` and `mean_mu()` were
+  removed.
+- **"More shrinkage is better for hubness at an acceptable price."** Both
+  hubness statistics do improve monotonically with λ (skewness 2.746 → 2.146,
+  hub max 95 → 60 from λ=0.10 to 0.25), but so does the ranking loss. λ=0.15 is
+  the only point where the hubness gain is real and the P@10 cost stays inside
+  the neutrality band.
+- **`rate16k` remains unfixed** at 0.10–0.11 top-1 for every arm, and λ does not
+  touch it. It is a resampling/feature-extraction problem, as recorded in
+  round 1 — no scoring knob will move it.
+
+### Code state after the round
+
+- `timbre2` = `timbre(25, true, 0.15f)`; `timbre` unchanged at λ=0.1 without
+  deltas.
+- `libmusly/methods/timbre2_tuning.cpp` and all seven variant headers deleted,
+  registrations dropped from `libmusly/lib.cpp` and `libmusly/CMakeLists.txt`.
+- `timbre::delta_scale` removed (round 1: −0.63 pp P@10, no effect on hubness).
+- `mutualproximity::normalize_csls()`, `mean_mu()` and the `csls_pre_mp` flag
+  removed.
+- Collection format version bumped to `2` (`musly/collectionfile.cpp`): λ
+  changes the stored features, so `MUSLY-1-timbre2` files now fail to load
+  loudly instead of meaning something different in silence. `MUSLY_VERSION`
+  stays 0.3, since the jukebox format itself did not change.
+- `eval/clone_collection.py` writes the new header version; `eval/run_tuning.sh`
+  and `eval/run_gaincheck.sh` no longer reference removed variants;
+  `eval/run_lambda_grid.sh`, `eval/summarize_lambda_grid.py` and
+  `eval/TUNING.md` are kept as the record of the round and say so.

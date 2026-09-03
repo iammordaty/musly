@@ -30,8 +30,10 @@ similarity measure, and easier builds on current toolchains:
     when initializing a collection (`musly -N`). It extends the classic
     timbre model with short-term temporal change (MFCC deltas), so tracks
     that share a similar “sound” but differ in how that sound evolves are
-    easier to tell apart. The previous *timbre* and *mandelellis* methods
-    remain available via `-n`.
+    easier to tell apart. Its statistical model is smoothed slightly more
+    than the classic one, which limits how often a single track turns up
+    as “similar” to everything else. The previous *timbre* and
+    *mandelellis* methods remain available via `-n`.
 -   Feature extraction for *timbre* / *timbre2* is more robust on real
     collections: level is normalized by loudness (RMS) rather than peak
     sample, quiet frames are ignored, the analysis is restricted to the
@@ -241,75 +243,70 @@ statistics, and a perturbation robustness set. See `eval/REPORT.md` for the
 protocol and decision rules. A different neighbor list alone is not treated
 as an improvement.
 
-### Tuning round 1 — what won and what lost ###
+### Tuning — what shipped and what was rejected ###
 
-Full numbers, trade-offs and the recorded failures are in
-`eval/TUNING_RESULTS.md`; the ranked experiment catalogue is in `eval/TUNING.md`.
-Baseline for all of it: `timbre2` at P@10 0.3604, hub skewness 2.758, hub max 96.
+Two tuning rounds are closed. Full numbers, trade-offs and the refuted
+hypotheses are in `eval/TUNING_RESULTS.md`; the round-1 experiment catalogue is
+`eval/TUNING.md`.
 
-Perturbation figures quoted below are on the **old, confounded** metric, kept so
-the arms stay comparable to each other. All eight variants of a track live in
-one collection, so siblings competed with the original for rank 1; sibling
-exclusion is now the default (`eval/score_perturbations.py`) and it moves
-`timbre2` overall top-1 from 0.336 to 0.845 without changing any features. On
-the corrected metric every arm of this round lands within 1.2 pp
-(0.841–0.853), so **the perturbation suite does not separate them at all** —
-including `timbre2_cs`, whose apparent +1.9 pp becomes −0.4 pp.
+**What shipped.** *timbre2* estimates its Gaussians with a Ledoit–Wolf shrinkage
+intensity of 0.15 rather than 0.10. On FMA-small that trades 0.60 pp of P@10
+(0.360 → 0.354, cluster-bootstrap CI [−0.76, −0.44] pp) for an improvement on
+**both** hubness statistics — skewness 2.75 → 2.48 and maximum k-occurrence
+95 → 82 — plus slightly better robustness to aggressive mp3 quantization
+(0.650 → 0.665). It was picked from a grid of eight configurations
+(λ ∈ {0.10, 0.15, 0.20, 0.25} × CSLS on/off) measured in a single run, and it is
+the only one that improved both hubness statistics while keeping P@10 inside the
+±1 pp neutrality band that was agreed before the run. Hubness is still worse
+than plain *timbre* (2.23 / 69); roughly half of the regression introduced by
+the delta features is recovered.
 
-**Won — kept as `timbre2_cs`.** A CSLS-style hub penalty folded into the Mutual
-Proximity reference distributions (`mutualproximity::normalize_csls()`, enabled
-by the `csls_pre_mp` constructor flag). P@10 0.3639 and hub max 96 → 70, i.e.
-back to `timbre`'s level. Hub *skewness* moves the wrong way (2.758 → 2.886):
-the correction cuts the extreme tail and tightens the bulk, which that statistic
-reads as more skew. Query-time only, no re-analysis. Left opt-in rather than
-promoted into `timbre2`, because skewness is the metric the baseline pin tracks.
-The case for it rests on P@10 and hub max alone — its perturbation advantage
-disappeared once the metric was corrected.
+**What was rejected.**
 
-**Lost — reverted.** Two variants were evaluated and removed again; only their
-tunable parameters remain, at inert defaults:
+| Experiment | Result |
+|---|---|
+| CSLS hub penalty inside Mutual Proximity | P@10 +0.37 pp (inside the neutrality band), hub max 95 → 70 but skewness 2.75 → 2.90, and `mp3_64k` robustness 0.650 → 0.620. A trade-off rather than a win, and its apparent perturbation advantage was an artifact of the old metric. Removed together with its second normalization path. |
+| Delta scaling ×0.5 | P@10 −0.63 pp, no effect on hubness — worse or neutral everywhere. The parameter was removed. |
+| Shrinkage λ ∈ {0.20, 0.25} | Both hubness statistics keep improving (down to 2.15 / 60) but P@10 falls 1.17–1.78 pp, well outside the neutrality band. |
+| λ=0.15 combined with CSLS | Lowest hub max of any acceptable arm (62) but skewness flat, i.e. CSLS cancels exactly the skewness gain λ provides. The two knobs reshape the same distribution instead of composing. |
 
-| Experiment | Parameter left in code | Result |
-|---|---|---|
-| delta scale 0.5 | `timbre::delta_scale` (default 1.0) | P@10 −0.63 pp, skewness −0.02, perturbations −1.1 pp — worse or neutral everywhere |
-| covariance shrinkage λ=0.15 | `gaussian_statistics::shrinkage_lambda` (default 0.1) | skewness 2.758 → **2.491** (best of the round) but P@10 −0.62 pp and perturbations −0.94 pp |
-
-Those two together are the most useful diagnostic result of the round: scaling
-the delta dimensions down does nothing to hub skewness, while widening the
-covariance shrinkage does. **The hubness regression comes from the sharpness of
-the covariance estimate in the 50-dimensional feature space, not from the delta
-dimensions.** Re-register the variants in `libmusly/lib.cpp` and
-`libmusly/methods/timbre2_tuning.cpp` to reproduce those arms.
+The most useful diagnostic result: scaling the delta dimensions down does
+nothing to hub skewness, while widening the covariance shrinkage does. **The
+hubness regression comes from the sharpness of the covariance estimate in the
+50-dimensional feature space, not from the delta dimensions themselves.**
 
 ### If you resume tuning ###
 
-1. **λ grid on top of `timbre2_cs`** (`{0.20, 0.25}`). λ acts at analysis time
-   and CSLS at query time, so the effects are independent: the combination is the
-   only open path to improving hubness on *both* statistics while keeping the
-   ranking and robustness gains. About 70 min per λ, measured end to end on
-   FMA-small: ~31 min to analyze 7994 tracks, ~16 min for the k=100 dump,
-   ~9 min for the AUC subsample, ~13 min for the perturbation set.
-   A query-time-only variant costs ~33 min instead, because
-   `eval/clone_collection.py` reuses the baseline features.
-2. **Loudness is done; don't tune `target_rms`.** The weak `vol_p6` figure was
-   a metric artifact, and the one real bug behind it is fixed: `resampler::
-   resample()` hard-clipped every sample to [-1, 1], which distorted any
-   above-full-scale content — including the originals, which peak above 0 dBFS
-   after mp3 decoding — before the scale-invariant RMS normalization could run.
-   It now attenuates uniformly by `1/peak`, and `musly -d` confirms a lossless
-   +6 dB copy yields features identical to the original to six decimals.
-   Note `ffmpeg -af volumedetect` is the *wrong* tool to audit this: it caps
-   `max_volume` at 0.0 dB and cannot see above-full-scale float. Use `astats`.
-3. **`rate16k` is the one real robustness failure left** (0.11–0.13 top-1 on the
-   corrected metric, for every method tried). It is resampling / feature
-   extraction, not ranking, so do not attack it from the scoring side.
-   `mp3_64k` (0.65–0.73) is second.
+1. **Loudness is done; don't tune `target_rms`.** The weak `vol_p6` figure that
+   started round 1 was a metric artifact — the perturbation set put all eight
+   variants of a track in one collection, so siblings outranked the original
+   (90.5 % of `vol_p6` queries). Sibling exclusion is now the default in
+   `eval/score_perturbations.py`, and on the corrected metric volume robustness
+   is at ceiling. The one real bug behind it is fixed: `resampler::resample()`
+   hard-clipped every sample to [-1, 1], which distorted any above-full-scale
+   content — including the originals, which peak above 0 dBFS after mp3
+   decoding — before the scale-invariant RMS normalization could run. It now
+   attenuates uniformly by `1/peak`, and `musly -d` confirms a lossless +6 dB
+   copy yields features identical to the original. Note `ffmpeg -af
+   volumedetect` is the *wrong* tool to audit this: it caps `max_volume` at
+   0.0 dB and cannot see above-full-scale float. Use `astats`.
+2. **`rate16k` is the one real robustness failure left** (0.10–0.13 top-1 on the
+   corrected metric, for every configuration tried, and shrinkage does not move
+   it). It is resampling / feature extraction, not ranking, so do not attack it
+   from the scoring side. `mp3_64k` (0.67 for *timbre2*, 0.73 for *timbre*) is
+   second.
+3. **The perturbation suite no longer separates methods** (all arms within
+   ~1 pp), so treat it as a regression guard, not as a selection criterion.
+   Ranking plus both hubness statistics are what decide.
 4. **Keep `OMP_NUM_THREADS=1` for anything reproducible.** Parallel `-a` is not
    deterministic: two 8-thread runs over the same 60 tracks produced different
    collection files, while single-threaded runs were byte identical. Each thread
    writes only its own slot, but they share the method instance and decoder
    scratch buffers through `mj`. The harness already pins one thread.
-
+5. **Budget the run time.** A full FMA-small arm is ~70 min single-threaded
+   (31 min analysis, 16 min k=100 dump, 9 min AUC subsample, 13 min
+   perturbations); an arm that only changes query-time behaviour costs ~27 min
+   because `eval/clone_collection.py` reuses the stored features.
 
 ## Library ##
 

@@ -200,16 +200,18 @@ docker build -t musly:dev .
 CHECK_DETERMINISM=1 eval/run_benchmark.sh
 ```
 
-Filled results for run `fma_small_20260831T103326Z` (7994 tracks, artist filter):
+Results on FMA-small (7994 tracks, artist filter):
 
-| Variant | P@10 | knn@5 | Notes |
-|---------|------|-------|-------|
-| `timbre` | 0.347 | 0.425 | shared stage 2–3 pipeline |
-| `timbre2` (default) | 0.360 | 0.443 | + MFCC deltas; ΔP@10 ≈ +0.013, CI above 0 |
+| Variant | P@10 | knn@5 | hub skew | Notes |
+|---------|------|-------|----------|-------|
+| `timbre` | 0.347 | 0.425 | 2.23 | shared stage 2–3 pipeline; run `fma_small_20260831T103326Z` |
+| `timbre2` (default) | 0.354 | 0.437 | 2.48 | + MFCC deltas, shrinkage λ=0.15; run `lambda_20260903T071915Z` |
 
-See [`eval/REPORT.md`](../eval/REPORT.md) for the full decision-rule verdict
-(hubness rose; volume perturbations are weak for both methods). A changed
-neighbor list alone is not acceptance.
+Deltas are worth ≈ +1.3 pp P@10 over `timbre` at the original shrinkage
+(λ=0.10) but raise hubness; the shipped λ=0.15 gives back 0.6 pp of that to
+recover part of the hubness regression. See [`eval/REPORT.md`](../eval/REPORT.md)
+for the decision-rule verdict and [`eval/TUNING_RESULTS.md`](../eval/TUNING_RESULTS.md)
+for the tuning grid. A changed neighbor list alone is not acceptance.
 
 ## Deliberately omitted
 

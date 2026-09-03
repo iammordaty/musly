@@ -19,7 +19,7 @@ fi
 
 PERT="${PERT:-$SCRIPT_DIR/data/gaincheck}"
 OUT="${OUT:-$SCRIPT_DIR/results/gaincheck}"
-METHODS="${METHODS:-timbre timbre2 timbre2_cs}"
+METHODS="${METHODS:-timbre timbre2}"
 K="${K:-50}"
 OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export OMP_NUM_THREADS

@@ -19,7 +19,7 @@ namespace methods {
 MUSLY_METHOD_REGIMPL(timbre2, 2);
 
 timbre2::timbre2() :
-        timbre(25, true)
+        timbre(25, true, 0.15f)
 {
 }
 
@@ -33,7 +33,10 @@ timbre2::about()
         "over the stacked features and compared with the Jensen-Shannon\n"
         "divergence, normalized by Mutual Proximity.\n"
         "Deltas introduce temporal information absent from bag-of-frames\n"
-        "timbre models (Mandel-Ellis / classic Musly timbre).";
+        "timbre models (Mandel-Ellis / classic Musly timbre). The covariance\n"
+        "estimate uses a Ledoit-Wolf shrinkage intensity of 0.15, which keeps\n"
+        "the 50-dimensional Gaussians from becoming so sharp that a few tracks\n"
+        "turn into hubs.";
 }
 
 } /* namespace methods */

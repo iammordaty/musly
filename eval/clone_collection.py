@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Clone a Musly collection file with a new method name (same track blobs).
 
-The on-disk format is: null-terminated header (MUSLY-1-<method>) followed by
+The on-disk format is: null-terminated header (MUSLY-2-<method>) followed by
 track records. Only the header string changes; feature bytes are unchanged.
-Use for query-time-only variants (e.g. timbre2_cs) to skip re-analysis.
+Use for query-time-only method variants to skip re-analysis. The format
+version must match musly/collectionfile.cpp.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ def clone(src: str, dst: str, method: str) -> None:
     if not data.startswith(b"MUSLY-"):
         raise SystemExit(f"not a Musly collection: {src}")
     end = data.index(b"\0") + 1
-    header = f"MUSLY-1-{method}\0".encode("ascii")
+    header = f"MUSLY-2-{method}\0".encode("ascii")
     with open(dst, "wb") as f:
         f.write(header)
         f.write(data[end:])

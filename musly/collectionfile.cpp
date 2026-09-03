@@ -23,7 +23,7 @@
 collection_file::collection_file(
         const std::string& coll) :
     coll(coll),
-    version("1"),
+    version("2"),
     header("MUSLY"),
     dash("-"),
     fid(0)

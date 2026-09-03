@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Summarize the lambda x CSLS grid (tuning round 2) against an in-run baseline.
 
+Historical record: the arms below are no longer registered methods. Round 2
+merged lambda=0.15 into timbre2 and removed the CSLS path, so this script only
+reads the stored results of that round (eval/results/lambda_20260903T071915Z).
+
 The baseline is an arm of the same run, not the pinned one: the resampler
 clipping fix changed the features, so cross-run comparison would conflate two
 changes.
@@ -14,10 +18,12 @@ import os
 import sys
 from typing import Dict, Optional
 
-# (arm, lambda, csls) — layout of the 3x2 design.
+# (arm, lambda, csls) — layout of the 4x2 design.
 GRID = [
     ("timbre2", 0.10, False),
     ("timbre2_cs", 0.10, True),
+    ("timbre2_sh15", 0.15, False),
+    ("timbre2_cs_sh15", 0.15, True),
     ("timbre2_sh20", 0.20, False),
     ("timbre2_cs_sh20", 0.20, True),
     ("timbre2_sh25", 0.25, False),

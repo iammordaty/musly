@@ -69,16 +69,6 @@ public:
             int length,
             float* sim);
 
-    // Like normalize(), but adds a CSLS-style hub penalty: the reference
-    // distributions are shifted so a track that is close to everything
-    // (mu below the collection average) is ranked down.
-    int
-    normalize_csls(
-            int seed_position,
-            int* other_positions,
-            int length,
-            float* sim);
-
 private:
     method* m;
     std::vector<musly_track*> norm_tracks;
@@ -92,10 +82,6 @@ private:
     void
     new_cache(
             int size);
-
-    // Collection average of the per-track reference means.
-    float
-    mean_mu();
 
     double
     normcdf(
