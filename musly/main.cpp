@@ -11,12 +11,19 @@
  */
 
 
+#include <sys/stat.h>
+#include <cerrno>
 #include <cstdio>
+#include <cstdint>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <algorithm>
 #include <limits>
 #include <map>
+#include <random>
+#include <set>
+#include <vector>
 #include <Eigen/Core>
 
 #define MUSLY_SUPPORT_STDIO
@@ -28,6 +35,11 @@
 #include "collectionfile.h"
 
 musly_jukebox* mj = 0;
+
+void tracks_free(std::vector<musly_track*>& tracks);
+bool tracks_initialize(std::vector<musly_track*>& tracks);
+void tracks_add(collection_file& cf, std::string directory_or_file,
+        std::string extension);
 
 
 
@@ -115,12 +127,41 @@ read_collectionfile(
     return count;
 }
 
-bool read_jukebox(std::string &filename, musly_jukebox** jukebox, int* last_reinit) {
-    std::cout << "Reading jukebox file: " << filename << std::endl;
+/** Rolling FNV-1a hash over the first \p count collection paths. The jukebox
+ * associates its per-track data with the collection by position only, so the
+ * fingerprint is what tells a matching state file apart from one that merely
+ * happens to hold the same number of tracks. Hashing a prefix keeps the
+ * incremental update path below working.
+ */
+uint64_t paths_fingerprint(const std::vector<std::string>& files, size_t count) {
+    uint64_t hash = 14695981039346656037ULL;
+    for (size_t i = 0; (i < count) && (i < files.size()); i++) {
+        const std::string& file = files[i];
+        for (size_t k = 0; k < file.size(); k++) {
+            hash ^= (unsigned char)file[k];
+            hash *= 1099511628211ULL;
+        }
+        hash ^= (unsigned char)'\n';
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+bool read_jukebox(const std::string& filename, musly_jukebox** jukebox,
+        int* last_reinit, uint64_t* fingerprint, bool lean = false) {
+    std::cout << "Reading jukebox file" << (lean ? " (lean)" : "")
+            << ": " << filename << std::endl;
+    *fingerprint = 0;
     if (FILE* f = fopen(filename.c_str(), "rb")) {
-        *jukebox = musly_jukebox_fromstream(f);
-        if (*jukebox && fread(last_reinit, sizeof(*last_reinit), 1, f) != 1) {
-            *last_reinit = 0;
+        *jukebox = lean ? musly_jukebox_fromstream_lean(f)
+                : musly_jukebox_fromstream(f);
+        if (*jukebox) {
+            if (fread(last_reinit, sizeof(*last_reinit), 1, f) != 1) {
+                *last_reinit = 0;
+            }
+            if (fread(fingerprint, sizeof(*fingerprint), 1, f) != 1) {
+                *fingerprint = 0;
+            }
         }
         fclose(f);
         return (*jukebox != NULL);
@@ -128,15 +169,266 @@ bool read_jukebox(std::string &filename, musly_jukebox** jukebox, int* last_rein
     return false;
 }
 
-bool write_jukebox(std::string &filename, musly_jukebox* jukebox, int last_reinit) {
+bool write_jukebox(const std::string& filename, musly_jukebox* jukebox,
+        int last_reinit, uint64_t fingerprint) {
     std::cout << "Writing jukebox file: " << filename << std::endl;
     if (FILE* f = fopen(filename.c_str(), "wb")) {
         bool result = (musly_jukebox_tostream(jukebox, f) > 0)
-                && (fwrite(&last_reinit, sizeof(last_reinit), 1, f) == 1);
+                && (fwrite(&last_reinit, sizeof(last_reinit), 1, f) == 1)
+                && (fwrite(&fingerprint, sizeof(fingerprint), 1, f) == 1);
         fclose(f);
         return result;
     }
     return false;
+}
+
+
+/** Collapses repeated separators so paths stored before trailing slashes were
+ * normalized ("dir//file") still compare equal to their clean spelling.
+ */
+std::string collapse_slashes(const std::string& path) {
+    std::string collapsed;
+    collapsed.reserve(path.size());
+    for (size_t i = 0; i < path.size(); i++) {
+        if ((path[i] == '/') && !collapsed.empty()
+                && (collapsed[collapsed.size() - 1] == '/')) {
+            continue;
+        }
+        collapsed += path[i];
+    }
+    return collapsed;
+}
+
+std::string normalize_path(const std::string& path) {
+    std::string normalized = collapse_slashes(path);
+    while ((normalized.length() > 0)
+            && (normalized[normalized.length() - 1] == '/')) {
+        normalized.erase(normalized.length() - 1);
+    }
+    return normalized;
+}
+
+/** True if \p stored is the given target or lies below it. The separator in
+ * the prefix keeps "/music/Single" from matching "/music/Singles/...".
+ */
+bool path_matches(const std::string& stored, const std::string& target) {
+    const std::string clean = normalize_path(stored);
+    if (clean == target) {
+        return true;
+    }
+    const std::string prefix = target + "/";
+    return clean.compare(0, prefix.length(), prefix) == 0;
+}
+
+/** 0 if the path exists, 1 if it is definitely gone, -1 if we cannot tell.
+ * Only ENOENT and ENOTDIR mean "removed"; a permission or I/O error says
+ * nothing about the file and must never lead to dropping a track.
+ */
+int path_state(const std::string& path) {
+    struct stat s;
+    if (stat(path.c_str(), &s) == 0) {
+        return 0;
+    }
+    if ((errno == ENOENT) || (errno == ENOTDIR)) {
+        return 1;
+    }
+    return -1;
+}
+
+/** Reads every path in the collection, tolerating repeated entries. */
+bool collection_paths(collection_file& cf, std::vector<std::string>& files) {
+    if (!cf.open("rb")) {
+        std::cerr << "Collection file: " << cf.get_file() << " not found."
+                << std::endl;
+        return false;
+    }
+    if (!cf.read_header()) {
+        std::cerr << "Collection file: " << cf.get_file() << " invalid."
+                << std::endl;
+        return false;
+    }
+
+    std::string file;
+    std::vector<unsigned char> data;
+    while (cf.read_rawtrack(file, data) >= 0) {
+        files.push_back(file);
+    }
+    return true;
+}
+
+/** Drops the jukebox state after a removal. Track ids are collection
+ * positions, so every stored normalization factor shifts and the state can
+ * no longer be reused.
+ */
+void invalidate_jukebox(programoptions& po) {
+    std::vector<std::string> candidates;
+    const std::string configured = po.get_option_str("j");
+    if (!configured.empty()) {
+        candidates.push_back(configured);
+    }
+    const std::string conventional = po.get_option_str("c") + ".jbox";
+    if (conventional != configured) {
+        candidates.push_back(conventional);
+    }
+
+    for (int i = 0; i < (int)candidates.size(); i++) {
+        if (std::remove(candidates[i].c_str()) == 0) {
+            std::cout << "Removed jukebox state (no longer matches the "
+                    "collection): " << candidates[i] << std::endl;
+        }
+    }
+}
+
+/** Path of the jukebox state to maintain during indexing, or empty when the
+ * caller did not ask for one. Without '-j'/'-J' the jukebox stays ephemeral.
+ */
+std::string jukebox_path_to_maintain(programoptions& po) {
+    return po.get_option_str("j");
+}
+
+/** Rebuilds the jukebox from the current collection and writes it to disk.
+ * Used after removals (ids shift) and when an incremental update is not safe.
+ */
+bool rebuild_jukebox_file(
+        collection_file& cf,
+        const std::string& jukebox_file) {
+    std::vector<musly_track*> tracks;
+    std::vector<std::string> tracks_files;
+    // Power on is done by read_collectionfile; free any previous global box.
+    if (mj) {
+        musly_jukebox_poweroff(mj);
+        mj = 0;
+    }
+    int track_count = read_collectionfile(cf, 't', &tracks, &tracks_files);
+    if (track_count < 0) {
+        return false;
+    }
+    if (track_count == 0) {
+        std::remove(jukebox_file.c_str());
+        tracks_free(tracks);
+        return true;
+    }
+    if (!tracks_initialize(tracks)) {
+        tracks_free(tracks);
+        return false;
+    }
+    bool ok = write_jukebox(jukebox_file, mj, track_count,
+            paths_fingerprint(tracks_files, tracks_files.size()));
+    tracks_free(tracks);
+    return ok;
+}
+
+/** After '-a', register any newly appended tracks with the existing jukebox
+ * (or rebuild it when the collection has grown by more than 10%).
+ */
+bool maintain_jukebox_after_add(
+        collection_file& cf,
+        programoptions& po,
+        int previous_count) {
+    const std::string jukebox_file = jukebox_path_to_maintain(po);
+    if (jukebox_file.empty()) {
+        return true;
+    }
+
+    std::vector<musly_track*> tracks;
+    std::vector<std::string> tracks_files;
+    if (mj) {
+        musly_jukebox_poweroff(mj);
+        mj = 0;
+    }
+    int track_count = read_collectionfile(cf, 't', &tracks, &tracks_files);
+    if (track_count < 0) {
+        return false;
+    }
+    if (track_count <= previous_count) {
+        // Nothing new was actually appended (all files were already present).
+        tracks_free(tracks);
+        return true;
+    }
+
+    int last_reinit = 0;
+    uint64_t stored_fingerprint = 0;
+    musly_jukebox* mj2 = NULL;
+    bool loaded = read_jukebox(jukebox_file, &mj2, &last_reinit,
+            &stored_fingerprint, false);
+
+    bool rebuilt = false;
+    if (!loaded
+            || strcmp(mj2->method_name, mj->method_name)
+            || (musly_jukebox_trackcount(mj2) != previous_count)
+            || (stored_fingerprint != paths_fingerprint(tracks_files,
+                    previous_count))
+            || (track_count > (int)(last_reinit * 1.1f))
+            || (last_reinit <= 0)) {
+        if (mj2) {
+            musly_jukebox_poweroff(mj2);
+            mj2 = NULL;
+        }
+        std::cout << "Rebuilding jukebox after adding tracks..." << std::endl;
+        if (!tracks_initialize(tracks)) {
+            tracks_free(tracks);
+            return false;
+        }
+        rebuilt = true;
+        last_reinit = track_count;
+    } else {
+        int num_new = track_count - previous_count;
+        std::cout << "Updating jukebox with " << num_new
+                << " new track(s)..." << std::endl;
+        musly_trackid* trackids = new musly_trackid[num_new];
+        int ret = musly_jukebox_addtracks(mj2,
+                tracks.data() + previous_count,
+                trackids, num_new, true);
+        delete[] trackids;
+        if (ret < 0) {
+            std::cerr << "Updating jukebox failed; rebuilding..." << std::endl;
+            musly_jukebox_poweroff(mj2);
+            if (!tracks_initialize(tracks)) {
+                tracks_free(tracks);
+                return false;
+            }
+            rebuilt = true;
+            last_reinit = track_count;
+        } else {
+            musly_jukebox_poweroff(mj);
+            mj = mj2;
+        }
+    }
+
+    bool ok = write_jukebox(jukebox_file, mj, last_reinit,
+            paths_fingerprint(tracks_files, tracks_files.size()));
+    tracks_free(tracks);
+    (void)rebuilt;
+    return ok;
+}
+
+/** Rewrites the collection and reports the outcome. */
+int apply_removal(collection_file& cf, programoptions& po,
+        const std::set<std::string>& remove) {
+    const int removed = cf.rewrite_without(remove);
+    if (removed < 0) {
+        std::cerr << "Rewriting the collection failed. The collection file "
+                "was left unchanged." << std::endl;
+        return 1;
+    }
+    std::cout << "Removed " << removed << " track(s). Previous collection "
+            "kept as: " << cf.get_file() << ".bak" << std::endl;
+
+    const std::string jukebox_file = jukebox_path_to_maintain(po);
+    if (!jukebox_file.empty()) {
+        // Track ids are collection positions, so a removal invalidates every
+        // stored factor. Rebuild from scratch rather than trying to patch.
+        std::cout << "Rebuilding jukebox after removal..." << std::endl;
+        if (!rebuild_jukebox_file(cf, jukebox_file)) {
+            std::cerr << "Jukebox rebuild failed; removing stale state."
+                    << std::endl;
+            invalidate_jukebox(po);
+            return 1;
+        }
+    } else {
+        invalidate_jukebox(po);
+    }
+    return 0;
 }
 
 void
@@ -146,51 +438,43 @@ tracks_add(collection_file& cf, std::string directory_or_file, std::string exten
     if (!fi.get_nextfilename(afile)) {
         std::cout << "No files found while scanning: " <<
                 directory_or_file << std::endl;
+        return;
     }
-    else {
-        int buffersize = musly_track_binsize(mj);
+
+    // Collect and sort so collection order is independent of readdir and of
+    // OpenMP scheduling. Mutual Proximity (and track ids) depend on that
+    // order, so unsorted parallel appends make similarity non-reproducible.
+    std::vector<std::string> files;
+    do {
+        files.push_back(afile);
+    } while (fi.get_nextfilename(afile));
+    std::sort(files.begin(), files.end());
+
+    int buffersize = musly_track_binsize(mj);
+    std::vector<std::vector<unsigned char> > serialized(files.size());
+    std::vector<int> status(files.size(), -1);  // -1 skip, 0 ok, 1 fail
+
 #ifdef _OPENMP
-        // collect all file names in a vector first
-        std::vector<std::string> files;
-        do {
-            files.push_back(afile);
-        } while (fi.get_nextfilename(afile));
-        #pragma omp parallel if (files.size() > 1)
+    #pragma omp parallel if (files.size() > 1)
 #endif
-        {
-        unsigned char* buffer =
-                new unsigned char[buffersize];
+    {
+        unsigned char* buffer = new unsigned char[buffersize];
         musly_track* mt = musly_track_alloc(mj);
 #ifdef _OPENMP
-        // do a parallel for loop over the collected file names
-        // use a dynamic schedule because computation may differ per file
         #pragma omp for schedule(dynamic)
+#endif
         for (int i = 0; i < (int)files.size(); i++) {
-            // set file to files[i] for the loop body
-            std::string& file = files[i];
-#else
-        // do a while loop over the fileiterator
-        int i = 0;
-        do {
-            // set file to our existing afile for the loop body
-            std::string& file = afile;
-#endif
+            const std::string& file = files[i];
             if (cf.contains_track(file)) {
-#ifdef _OPENMP
-                #pragma omp critical
-#endif
-                {
-                std::cout << "Skipping already analyzed [" << i+1 << "]: "
-                        << limit_string(file, 60) << std::endl;
-                }  // pragma omp critical
+                status[i] = -1;
                 continue;
             }
-#ifndef _OPENMP
-            std::cout << "Analyzing [" << i+1 << "]: "
-                    << limit_string(file, 60) << std::flush;
-#endif
-            int excerpt_length = 180;
-            int excerpt_start = -210;
+
+            // Decode a generous centered window; timbre/timbre2 narrow it
+            // down to its centered 60%, which lands on 180 seconds for
+            // anything longer than five minutes.
+            int excerpt_length = 300;
+            int excerpt_start = -600;
 
             int ret = musly_track_analyze_audiofile(
                 mj,
@@ -199,35 +483,38 @@ tracks_add(collection_file& cf, std::string directory_or_file, std::string exten
                 excerpt_start,
                 mt
             );
-#ifdef _OPENMP
-            #pragma omp critical
-            {
-            std::cout << "Analyzing [" << i+1 << "]: "
-                    << limit_string(file, 60);
-#endif
             if (ret == 0) {
                 int serialized_buffersize =
                         musly_track_tobin(mj, mt, buffer);
                 if (serialized_buffersize == buffersize) {
-                    cf.append_track(file, buffer, buffersize);
-                    std::cout << " - [OK]" << std::endl;
+                    serialized[i].assign(buffer, buffer + buffersize);
+                    status[i] = 0;
                 } else {
-                    std::cout << " - [FAILED]." << std::endl;
+                    status[i] = 1;
                 }
-
             } else {
-                std::cout << " - [FAILED]." << std::endl;
+                status[i] = 1;
             }
-#ifdef _OPENMP
-            }  // pragma omp critical
-        }  // for loop
-#else
-            i++;
-        } while (fi.get_nextfilename(afile));
-#endif
+        }
         delete[] buffer;
         musly_track_free(mt);
-        }  // pragma omp parallel
+    }
+
+    // Append in sorted index order after analysis finishes.
+    for (int i = 0; i < (int)files.size(); i++) {
+        if (status[i] < 0) {
+            std::cout << "Skipping already analyzed [" << i+1 << "]: "
+                    << limit_string(files[i], 60) << std::endl;
+            continue;
+        }
+        std::cout << "Analyzing [" << i+1 << "]: "
+                << limit_string(files[i], 60);
+        if (status[i] == 0) {
+            cf.append_track(files[i], serialized[i].data(), buffersize);
+            std::cout << " - [OK]" << std::endl;
+        } else {
+            std::cout << " - [FAILED]." << std::endl;
+        }
     }
 }
 
@@ -238,18 +525,28 @@ tracks_initialize(
 {
     std::vector<musly_trackid> trackids(tracks.size(), -1);
 
-    // initialize the jukebox music style
+    // Initialize the jukebox music style. Mutual Proximity calibrates every
+    // track against this reference set, so one that misrepresents the
+    // collection distorts the distance scale; see
+    // doc/similarity-pipeline-analysis.md. Using the whole collection removes
+    // that risk entirely, at the price of tracks * reference distance
+    // evaluations during registration (roughly 7 us each, single threaded):
+    // about 3.5 minutes for 5000 tracks and 8 minutes at the limit below.
+    // Beyond it, fall back to a sample drawn from the entire collection.
+    const int max_reference_tracks = 8000;
+    const int sampled_reference_tracks = 1000;
+
     int ret;
-    if (trackids.size() <= 1000) {
-        // use all available tracks
+    if ((int)tracks.size() <= max_reference_tracks) {
         ret = musly_jukebox_setmusicstyle(mj, tracks.data(),
                 tracks.size());
     }
     else {
-        // use a random subset of 1000 tracks
         std::vector<musly_track*> tracks2(tracks);
-        std::random_shuffle(tracks2.begin(), tracks2.end());
-        ret = musly_jukebox_setmusicstyle(mj, tracks2.data(), 1000);
+        std::mt19937 rng(42);
+        std::shuffle(tracks2.begin(), tracks2.end(), rng);
+        ret = musly_jukebox_setmusicstyle(mj, tracks2.data(),
+                sampled_reference_tracks);
     }
     if (ret != 0) {
         return false;
@@ -453,7 +750,8 @@ write_mirex_sparse(
         std::vector<std::string>& tracks_files,
         const std::string& file,
         const std::string& method,
-        int k)
+        int k,
+        std::vector<int>& artists)
 {
     std::ofstream f(file.c_str());
     if (f.fail()) {
@@ -465,39 +763,40 @@ write_mirex_sparse(
             method << std::endl;
 
     k = std::min(k, (int)tracks.size());
-    std::vector<int> artists_null; // disable artist filtering
 
     std::vector<musly_trackid> trackids(tracks.size());
     for (musly_trackid i = 0; i < (int)trackids.size(); i++) {
         trackids[i] = i;
     }
 
+    // Buffer lines by query index so OpenMP does not scramble output order.
+    std::vector<std::string> lines(tracks.size());
+
 #ifdef _OPENMP
     #pragma omp parallel for schedule(static)
 #endif
     for (int i = 0; i < (int)tracks.size(); i++) {
-        // compute k nearest neighbors
         std::vector<similarity_knn> track_idx = compute_similarity(
-                mj, k, artists_null,
+                mj, k, artists,
                 i, tracks, trackids);
         if (track_idx.size() == 0) {
             continue;
         }
 
-#ifdef _OPENMP
-        #pragma omp critical
-        {
-#endif
-        // write to file
-        f << tracks_files[i];
-        for (int i = 0; i < k; i++) {
-            int j = track_idx[i].first;
-            f << "\t" << tracks_files[j] << "," << track_idx[i].second;
+        std::ostringstream row;
+        row << tracks_files[i];
+        int n = (int)track_idx.size();
+        for (int j = 0; j < n; j++) {
+            int tid = track_idx[j].first;
+            row << "\t" << tracks_files[tid] << "," << track_idx[j].second;
         }
-        f << std::endl;
-#ifdef _OPENMP
+        lines[i] = row.str();
+    }
+
+    for (int i = 0; i < (int)lines.size(); i++) {
+        if (!lines[i].empty()) {
+            f << lines[i] << std::endl;
         }
-#endif
     }
 
     f.close();
@@ -598,7 +897,8 @@ evaluate_collection(
         // predicted genre is decided by a majority vote of its closest k
         // neighbors
         genre_hist.fill(0);
-        for (int j = 0; j < k; j++) {
+        int knn_count = (int)knn_tracks.size();
+        for (int j = 0; j < knn_count; j++) {
 
             // get the index of the j'th knn
             int knn_idx = knn_tracks[j].first;
@@ -735,9 +1035,20 @@ main(int argc, char *argv[])
             return ret;
         }
         std::cout << "Read " << track_count << " musly tracks." << std::endl;
+        const int previous_count = track_count;
 
         // search for new files, analyze and add them
-        tracks_add(cf, po.get_option_str("a"), po.get_option_str("x"));
+        std::vector<std::string> add_paths = po.get_option_strs("a");
+        for (int i = 0; i < (int)add_paths.size(); i++) {
+            tracks_add(cf, add_paths[i], po.get_option_str("x"));
+        }
+
+        // Keep the on-disk jukebox in sync when the caller asked for one,
+        // so subsequent '-p' queries never pay for a full rebuild.
+        if (!maintain_jukebox_after_add(cf, po, previous_count)) {
+            std::cerr << "Failed to update the jukebox state file." << std::endl;
+            ret = 1;
+        }
 
     // -l: list files in collection file
     } else if (po.get_action() == "l") {
@@ -753,6 +1064,97 @@ main(int argc, char *argv[])
         int track_count = read_collectionfile(cf, 'd');
         if (track_count < 0) {
             ret = -1;
+        }
+
+    // -r: remove the given files/directories from the collection
+    } else if (po.get_action() == "r") {
+        std::vector<std::string> files;
+        if (!collection_paths(cf, files)) {
+            return 1;
+        }
+        std::cout << "Read " << files.size() << " musly tracks." << std::endl;
+
+        std::vector<std::string> targets = po.get_option_strs("r");
+        std::set<std::string> remove;
+        for (int t = 0; t < (int)targets.size(); t++) {
+            const std::string target = normalize_path(targets[t]);
+            int matched = 0;
+            for (int i = 0; i < (int)files.size(); i++) {
+                if (path_matches(files[i], target)) {
+                    remove.insert(files[i]);
+                    matched++;
+                }
+            }
+            std::cout << "Matched " << matched << " track(s): " << targets[t]
+                    << std::endl;
+        }
+
+        if (remove.empty()) {
+            std::cout << "Nothing to remove." << std::endl;
+        } else {
+            for (std::set<std::string>::const_iterator it = remove.begin();
+                    it != remove.end(); ++it) {
+                std::cout << "Removing: " << *it << std::endl;
+            }
+            ret = apply_removal(cf, po, remove);
+        }
+
+    // -R: remove tracks whose audio file is gone
+    } else if (po.get_action() == "R") {
+        std::vector<std::string> files;
+        if (!collection_paths(cf, files)) {
+            return 1;
+        }
+        std::cout << "Read " << files.size() << " musly tracks." << std::endl;
+
+        bool relative = false;
+        std::set<std::string> missing;
+        int unknown = 0;
+        for (int i = 0; i < (int)files.size(); i++) {
+            if (files[i].empty() || (files[i][0] != '/')) {
+                relative = true;
+            }
+            const int state = path_state(files[i]);
+            if (state > 0) {
+                missing.insert(files[i]);
+            } else if (state < 0) {
+                std::cout << "Cannot check, keeping: " << files[i] << std::endl;
+                unknown++;
+            }
+        }
+
+        if (relative) {
+            std::cout << "Warning: the collection contains relative paths. "
+                    "They are resolved against the current directory, so run "
+                    "this from the same place the tracks were added."
+                    << std::endl;
+        }
+        if (unknown > 0) {
+            std::cout << unknown << " track(s) could not be checked and are "
+                    "kept." << std::endl;
+        }
+
+        for (std::set<std::string>::const_iterator it = missing.begin();
+                it != missing.end(); ++it) {
+            std::cout << "Missing: " << *it << std::endl;
+        }
+        std::cout << "Found " << missing.size() << " missing track(s) out of "
+                << files.size() << "." << std::endl;
+
+        if (missing.empty()) {
+            // nothing to do
+        } else if (po.get_option_str("y") != "1") {
+            std::cout << "Nothing was changed. Repeat with '-y' to remove "
+                    "these tracks." << std::endl;
+        } else if ((files.size() >= 20) && (missing.size() * 2 > files.size())) {
+            // A disconnected volume makes every file look deleted at once.
+            std::cerr << "Refusing to remove more than half of the collection. "
+                    "Check that the music volume is mounted. To do this on "
+                    "purpose, remove the directories explicitly with '-r'."
+                    << std::endl;
+            ret = 1;
+        } else {
+            ret = apply_removal(cf, po, missing);
         }
 
     } else {
@@ -775,52 +1177,88 @@ main(int argc, char *argv[])
         // if a jukebox state file was given, try to read it
         std::string jukebox_file = po.get_option_str("j");
         int last_reinit = 0;
+        uint64_t stored_fingerprint = 0;
         if (!jukebox_file.empty()) {
             musly_jukebox* mj2 = NULL;
-            if (!read_jukebox(jukebox_file, &mj2, &last_reinit)) {
-                std::cout << "Reading failed.";
-            }
-            else if (strcmp(mj2->method_name, mj->method_name)) {
-                std::cout << "Jukebox file is for method '" << mj2->method_name
-                        << "', but collection file is for method '"
-                        << mj->method_name << "'.";
-            }
-            else if (track_count < musly_jukebox_trackcount(mj2)) {
-                std::cout << "Jukebox file is for " << musly_jukebox_trackcount(mj2)
-                        << " tracks, but collection file has " << track_count
-                        << " tracks only.";
-            }
-            else if (track_count == musly_jukebox_trackcount(mj2)) {
-                // everything is fine, use loaded jukebox directly
+            // Prefer a lean load first: when the collection is unchanged the
+            // Mutual Proximity reference set is unused and several megabytes
+            // of I/O can be skipped. Fall back to a full load when anything
+            // needs updating.
+            bool used_lean = false;
+            if (read_jukebox(jukebox_file, &mj2, &last_reinit,
+                    &stored_fingerprint, true)
+                    && (strcmp(mj2->method_name, mj->method_name) == 0)
+                    && (track_count == musly_jukebox_trackcount(mj2))
+                    && (stored_fingerprint == paths_fingerprint(tracks_files,
+                            musly_jukebox_trackcount(mj2)))) {
                 musly_jukebox_poweroff(mj);
                 mj = mj2;
-            }
-            else if (track_count > (int)(last_reinit * 1.1f)) {
-                std::cout << "Jukebox file was initialized for " << last_reinit
-                        << " tracks, but collection file has " << track_count
-                        << " tracks (an increase of over 10%).";
-            }
-            else {
-                int num_new = track_count - musly_jukebox_trackcount(mj2);
-                std::cout << "Jukebox file has " << num_new <<
-                        " track(s) less than collection; updating..." << std::endl;
-                musly_trackid* trackids = new musly_trackid[num_new];
-                if (musly_jukebox_addtracks(mj2,
-                        tracks.data() + track_count - num_new,
-                        trackids, num_new, true) < 0) {
-                    std::cout << "Updating jukebox failed." << std::endl;
+                used_lean = true;
+            } else {
+                if (mj2) {
+                    musly_jukebox_poweroff(mj2);
+                    mj2 = NULL;
                 }
-                else {
-                    // updating went fine, use loaded jukebox
+                if (!read_jukebox(jukebox_file, &mj2, &last_reinit,
+                        &stored_fingerprint, false)) {
+                    std::cout << "Reading failed.";
+                }
+                else if (strcmp(mj2->method_name, mj->method_name)) {
+                    std::cout << "Jukebox file is for method '" << mj2->method_name
+                            << "', but collection file is for method '"
+                            << mj->method_name << "'.";
+                }
+                else if (track_count < musly_jukebox_trackcount(mj2)) {
+                    std::cout << "Jukebox file is for "
+                            << musly_jukebox_trackcount(mj2)
+                            << " tracks, but collection file has "
+                            << track_count << " tracks only.";
+                }
+                else if (stored_fingerprint
+                        != paths_fingerprint(tracks_files,
+                                musly_jukebox_trackcount(mj2))) {
+                    // Same number of tracks does not mean the same tracks: a
+                    // removal followed by an addition would otherwise apply
+                    // the stored normalization factors to the wrong songs.
+                    std::cout << "Jukebox file does not match the contents of "
+                            "the collection file.";
+                }
+                else if (track_count == musly_jukebox_trackcount(mj2)) {
                     musly_jukebox_poweroff(mj);
                     mj = mj2;
-                    // and write updated jukebox
-                    write_jukebox(jukebox_file, mj, last_reinit);
                 }
-            }
-            if (mj != mj2) {
-                std::cout << std::endl << "Initializing new jukebox..." << std::endl;
-            }
+                else if (track_count > (int)(last_reinit * 1.1f)) {
+                    std::cout << "Jukebox file was initialized for "
+                            << last_reinit << " tracks, but collection file "
+                            "has " << track_count
+                            << " tracks (an increase of over 10%).";
+                }
+                else {
+                    int num_new = track_count - musly_jukebox_trackcount(mj2);
+                    std::cout << "Jukebox file has " << num_new <<
+                            " track(s) less than collection; updating..."
+                            << std::endl;
+                    musly_trackid* trackids = new musly_trackid[num_new];
+                    if (musly_jukebox_addtracks(mj2,
+                            tracks.data() + track_count - num_new,
+                            trackids, num_new, true) < 0) {
+                        std::cout << "Updating jukebox failed." << std::endl;
+                    }
+                    else {
+                        musly_jukebox_poweroff(mj);
+                        mj = mj2;
+                        write_jukebox(jukebox_file, mj, last_reinit,
+                                paths_fingerprint(tracks_files,
+                                        tracks_files.size()));
+                    }
+                    delete[] trackids;
+                }
+                if (mj != mj2) {
+                    std::cout << std::endl << "Initializing new jukebox..."
+                            << std::endl;
+                }
+            } // end full-load branch
+            (void)used_lean;
         }
         else {
             std::cout << "Initializing jukebox..." << std::endl;
@@ -836,7 +1274,8 @@ main(int argc, char *argv[])
             }
             else if (!jukebox_file.empty()) {
                 // if a jukebox state file was given, update it
-                write_jukebox(jukebox_file, mj, track_count);
+                write_jukebox(jukebox_file, mj, track_count,
+                        paths_fingerprint(tracks_files, tracks_files.size()));
             }
         }
 
@@ -882,6 +1321,17 @@ main(int argc, char *argv[])
         } else if (po.get_action() == "m" || po.get_action() == "s") {
             std::string file = po.get_option_str(po.get_action());
 
+            // Optional artist filter (same path field as for '-e').
+            int f = po.get_option_int("f");
+            std::vector<int> artists;
+            std::map<int, std::string> artist_ids;
+            if (f >= 0) {
+                field_from_strings(tracks_files, f, artist_ids, artists);
+                std::cout << "Artist filter active (-f)." << std::endl
+                        << "Found " << artist_ids.size() << " artists."
+                        << std::endl;
+            }
+
             // compute a similarity matrix and write MIREX formatted to the
             // given file
             std::cout << "Computing and writing similarity matrix to: " << file
@@ -891,7 +1341,8 @@ main(int argc, char *argv[])
                 ret = write_mirex_full(tracks, tracks_files, file, cf.get_method());
             } else {
                 int k = po.get_option_int("k");
-                ret = write_mirex_sparse(tracks, tracks_files, file, cf.get_method(), k);
+                ret = write_mirex_sparse(tracks, tracks_files, file,
+                        cf.get_method(), k, artists);
             }
             if (ret == 0) {
                 std::cout << "Success." << std::endl;
@@ -899,36 +1350,58 @@ main(int argc, char *argv[])
                 std::cerr << "Failed to open file for writing." << std::endl;
             }
 
-        // -p: compute and display a playlist for a single seed track
+        // -p: compute and display playlists for one or more seed tracks
         } else if (po.get_action() == "p") {
-            std::string seed_file = po.get_option_str("p");
-
-            std::vector<std::string>::iterator it = std::find(
-                    tracks_files.begin(), tracks_files.end(), seed_file);
-            if (it == tracks_files.end()) {
-                std::cerr << "File not found in collection! Aborting." << std::endl;
-                tracks_free(tracks);
-                musly_jukebox_poweroff(mj);
-                return -1;
+            std::vector<std::string> seed_args = po.get_option_strs("p");
+            std::vector<std::string> seed_files;
+            for (int i = 0; i < (int)seed_args.size(); i++) {
+                if (seed_args[i] == "-") {
+                    std::string line;
+                    while (std::getline(std::cin, line)) {
+                        if (!line.empty()) {
+                            seed_files.push_back(line);
+                        }
+                    }
+                } else {
+                    seed_files.push_back(seed_args[i]);
+                }
             }
 
-            // compute a single playlist
             int k = po.get_option_int("k");
-            std::cout << "Computing the k=" << k << " most similar tracks to: "
-                    << seed_file << std::endl;
+            std::string outputmode = po.get_option_str("o");
             std::vector<musly_trackid> trackids(tracks.size());
             for (int i = 0; i < (int)trackids.size(); i++) {
                 trackids[i] = i;
             }
-            musly_trackid seed = std::distance(tracks_files.begin(), it);
-            std::string outputmode = po.get_option_str("o");
-            std::string pl = compute_playlist(tracks, trackids, tracks_files,
-                    seed, k, outputmode);
-            if (pl == "") {
-                std::cerr << "Failed to compute similar tracks for given file."
+
+            int skipped = 0;
+            for (int s = 0; s < (int)seed_files.size(); s++) {
+                const std::string& seed_file = seed_files[s];
+                std::vector<std::string>::iterator it = std::find(
+                        tracks_files.begin(), tracks_files.end(), seed_file);
+                if (it == tracks_files.end()) {
+                    std::cerr << "File not found in collection, skipping: "
+                            << seed_file << std::endl;
+                    skipped++;
+                    continue;
+                }
+
+                std::cout << "Computing the k=" << k
+                        << " most similar tracks to: " << seed_file
                         << std::endl;
-            } else {
-                std::cout << pl;
+                musly_trackid seed = std::distance(tracks_files.begin(), it);
+                std::string pl = compute_playlist(tracks, trackids,
+                        tracks_files, seed, k, outputmode);
+                if (pl == "") {
+                    std::cerr << "Failed to compute similar tracks for: "
+                            << seed_file << std::endl;
+                    skipped++;
+                } else {
+                    std::cout << pl;
+                }
+            }
+            if (skipped > 0) {
+                ret = 1;
             }
         }
 

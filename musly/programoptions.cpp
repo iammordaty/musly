@@ -48,7 +48,7 @@ programoptions::programoptions(int argc, char *argv[],
     opterr = 0;
     while (1) {
 
-        int c = getopt(argc, argv, "v:ihc:Jj:a:x:Ee:f:Nn:k:ldm:s:p:o:");
+        int c = getopt(argc, argv, "v:ihc:Jj:a:x:Ee:f:Nn:k:ldm:s:p:o:r:Ry");
         if (c == -1) {
             break;
         }
@@ -66,16 +66,41 @@ programoptions::programoptions(int argc, char *argv[],
             }
             break;
 
+        // -a, -r and -p may be repeated to cover several locations / seeds
+        case 'a':
+        case 'r':
+        case 'p': {
+            std::string copt;
+            copt = (char)(c);
+            if ((action.length() != 0) && (action != copt)) {
+                action = "error";
+            } else {
+                action = copt;
+                if (optarg) {
+                    optionstr[copt] = optarg;
+                    optionlist[copt].push_back(optarg);
+                }
+            }
+            break;
+        }
+
+        // -R takes no argument and must stay distinct from -r
+        case 'R':
+            if (action.length() != 0) {
+                action = "error";
+            } else {
+                action = "R";
+            }
+            break;
+
         case 'i':
         case 'h':
-        case 'a':
         case 'n':
         case 'e':
         case 'l':
         case 'd':
         case 'm':
         case 's':
-        case 'p':
             if (action.length() != 0) {
                 action = "error";
             } else {
@@ -102,6 +127,9 @@ programoptions::programoptions(int argc, char *argv[],
             break;
         case 'J':
             optionstr["j"] = "*";
+            break;
+        case 'y':
+            optionstr["y"] = "1";
             break;
 
         // errors
@@ -144,6 +172,21 @@ programoptions::get_option_str(
     }
 
     return "";
+}
+
+std::vector<std::string>
+programoptions::get_option_strs(
+        const std::string& option)
+{
+    if (optionlist.find(option) != optionlist.end()) {
+        return optionlist[option];
+    }
+
+    std::vector<std::string> values;
+    if (!get_option_str(option).empty()) {
+        values.push_back(get_option_str(option));
+    }
+    return values;
 }
 
 int
@@ -191,13 +234,22 @@ cout << "  -n MTH | -N  initialize the collection (set with '-c') using the" << 
 cout << " MUSIC ANALYSIS/PLAYLIST GENERATION:" << endl;
 cout << "  -a DIR/FILE  analyze and add the given audio FILE to the collection" << endl
      << "               file. If a Directory is given, the directory is scanned" << endl
-     << "               recursively for audio files." << endl;
+     << "               recursively for audio files. May be repeated to scan" << endl
+     << "               several locations in a single run. With '-j'/'-J' the" << endl
+     << "               jukebox state is updated so later '-p' queries stay fast." << endl;
 cout << "  -x EXT       only analyze files with file extension EXT when adding" << endl
      << "               audio files with '-a'. DEFAULT: '' (any)" << endl;
+cout << "  -r DIR/FILE  remove the given FILE from the collection file. If a" << endl
+     << "               Directory is given, every track below it is removed." << endl
+     << "               May be repeated. Rebuilds the jukebox state when '-j'" << endl
+     << "               or '-J' is given; otherwise invalidates it." << endl;
+cout << "  -R           remove all tracks whose audio file no longer exists." << endl
+     << "               Lists the affected tracks without changing anything" << endl
+     << "               unless '-y' is given as well." << endl;
+cout << "  -y           confirm the destructive operation requested with '-R'." << endl;
 cout << "  -p FILE      print a playlist of the '-k' most similar tracks for" << endl
-     << "               the given FILE. If FILE is not found in the collection" << endl
-     << "               file, it is analyzed and then compared to all other" << endl
-     << "               tracks found in the collection file ('-c')." << endl;
+     << "               the given FILE. May be repeated; '-p -' reads paths" << endl
+     << "               from stdin (one per line). Unknown seeds are skipped." << endl;
 cout << " LISTING:" << endl;
 cout << "  -l           list all files in the collection file." << endl;
 cout << "  -d           dump the features in the collection file to the console" << endl;
@@ -207,9 +259,10 @@ cout << "  -e NUM | -E  perform a basic kNN (k-nearest neighbor) music genre" <<
      << "               file. The parameter k is set with option '-k'. The" << endl
      << "               genre is inferred from the path element at position NUM." << endl
      << "               The genre position within the path is guessed with '-E'." << endl;
-cout << "  -f NUM       Use an artist filter for the evaluation ('-e'). The " << endl
-     << "               artist name is inferred from the path element at" << endl
-     << "               position NUM." << endl
+cout << "  -f NUM       Use an artist filter for the evaluation ('-e') and" << endl
+     << "               for sparse similarity matrices ('-s'). The artist" << endl
+     << "               name is inferred from the path element at position" << endl
+     << "               NUM. Neighbors by the same artist are skipped." << endl
      << "               DEFAULT: -1 (No artist filter)" << endl;
 cout << "  -m FILE      compute the full similarity matrix for the specified" << endl
      << "               collection and write it to FILE. It is written in MIREX" << endl

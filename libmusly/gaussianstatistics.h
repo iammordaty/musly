@@ -27,12 +27,15 @@ private:
 
     int covar_elems;
 
+    float shrinkage_lambda;
+
 public:
     /** A musly Gaussian representation.
      *
      */
     gaussian_statistics(
-            int gaussian_dim);
+            int gaussian_dim,
+            float shrinkage_lambda = 0.1f);
 
     int get_covarelems();
 

@@ -11,6 +11,8 @@
 
 #include "resampler.h"
 
+#include <cmath>
+
 #include "minilog.h"
 
 namespace musly {
@@ -40,6 +42,7 @@ std::vector<float> resampler::resample(
 
     int in_pos = 0;
     int out_pos = 0;
+    float peak = 1.0f;
 
     while (in_pos < pcm_len) {
 
@@ -55,12 +58,10 @@ std::vector<float> resampler::resample(
             pcm_out.resize(out_pos+out_written);
         }
         for (int i = 0; i < out_written; i++) {
-            if (dst[i] < -1) {
-                pcm_out[out_pos + i] = -1;
-            } else if (dst[i] > 1) {
-                pcm_out[out_pos + i] = 1;
-            } else {
-                pcm_out[out_pos + i] = dst[i];
+            pcm_out[out_pos + i] = dst[i];
+            const float mag = std::fabs(dst[i]);
+            if (std::isfinite(mag) && (mag > peak)) {
+                peak = mag;
             }
         }
 
@@ -70,6 +71,18 @@ std::vector<float> resampler::resample(
 
     if (out_pos < (int)pcm_out.size()) {
         pcm_out.resize(out_pos);
+    }
+
+    // Keep the [-1, 1] output contract by attenuating uniformly instead of
+    // clipping sample by sample. Decoded mp3 and resampler ringing routinely
+    // overshoot full scale, and hard clipping here would distort the signal
+    // before the scale-invariant RMS normalization in powerspectrum can run,
+    // making features depend on input gain.
+    if (peak > 1.0f) {
+        const float scale = 1.0f / peak;
+        for (size_t i = 0; i < pcm_out.size(); i++) {
+            pcm_out[i] *= scale;
+        }
     }
 
     delete[] dst;

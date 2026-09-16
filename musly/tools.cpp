@@ -147,25 +147,62 @@ field_from_strings(
     }
 }
 
+/** Is the byte a UTF-8 continuation byte (10xxxxxx)? Such bytes never start
+ * a character, so a string must not be cut in front of them.
+ */
+static bool
+is_utf8_continuation(
+        char c)
+{
+    return (static_cast<unsigned char>(c) & 0xC0) == 0x80;
+}
+
+
+static size_t
+utf8_length(
+        const std::string& s)
+{
+    size_t characters = 0;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (!is_utf8_continuation(s[i])) {
+            characters++;
+        }
+    }
+    return characters;
+}
+
+
 std::string
 limit_string(
         const std::string& s,
         int maxsize)
 {
-    if ((int)s.size() <= maxsize) {
+    if (maxsize <= 0) {
+        return "";
+    }
+
+    // Count characters rather than bytes: paths routinely contain non-ASCII
+    // names, and cutting by byte offset both misjudges the console width and
+    // splits multi-byte sequences into replacement characters.
+    if ((int)utf8_length(s) <= maxsize) {
         return s;
     }
 
-    if (maxsize == 0) {
-        return "";
-    } else if (maxsize == 1) {
+    if (maxsize == 1) {
         return ".";
     } else if (maxsize == 2) {
         return "..";
-    } else {
-        std::string s2 = s.substr(s.size()-maxsize, maxsize);
-        s2[0] = '.';
-        s2[1] = '.';
-        return s2;
     }
+
+    // Walk back over whole characters to keep the last maxsize-2 of them.
+    int wanted = maxsize - 2;
+    size_t start = s.size();
+    while ((start > 0) && (wanted > 0)) {
+        do {
+            start--;
+        } while ((start > 0) && is_utf8_continuation(s[start]));
+        wanted--;
+    }
+
+    return ".." + s.substr(start);
 }

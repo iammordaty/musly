@@ -20,6 +20,69 @@ The source code is released under the MPL 2.0 see the file <musly/COPYING>
 
 ## Version History ##
 
+### VERSION 0.3 (under development) ###
+Not released yet.
+
+This iteration focuses on more reliable analysis, a stronger default
+similarity measure, and easier builds on current toolchains:
+
+-   A new similarity method, *timbre2*, is added and becomes the default
+    when initializing a collection (`musly -N`). It extends the classic
+    timbre model with short-term temporal change (MFCC deltas), so tracks
+    that share a similar “sound” but differ in how that sound evolves are
+    easier to tell apart. Its statistical model is smoothed slightly more
+    than the classic one, which limits how often a single track turns up
+    as “similar” to everything else. The previous *timbre* and
+    *mandelellis* methods remain available via `-n`.
+-   Feature extraction for *timbre* / *timbre2* is more robust on real
+    collections: level is normalized by loudness (RMS) rather than peak
+    sample, quiet frames are ignored, the analysis is restricted to the
+    centered 60% of the signal so intros and outros are skipped in
+    proportion to the track length, long inputs are summarized from
+    several evenly spaced excerpts within that region, and the Gaussian
+    model is estimated more stably.
+-   Degenerate audio (digital silence, near-empty excerpts) and other
+    numerical edge cases no longer produce misleading “most similar”
+    results or corrupt distance rankings.
+-   The audio decoder works with current FFmpeg releases (including 7.x),
+    with more reliable seeking and decoding of the selected excerpt.
+-   Collections can be maintained without rebuilding them from scratch:
+    `-a` may be given several times to scan several locations in one run,
+    `-r DIR/FILE` removes a track or a whole directory from the collection,
+    and `-R` removes the tracks whose audio file has disappeared (listing
+    them first, and only applying the change when `-y` is added). Trailing
+    slashes in scan and removal paths no longer produce duplicate-looking
+    entries.
+-   Saved jukebox state now records which tracks it was built for, so a
+    state file that no longer matches the collection is rebuilt instead of
+    being applied to the wrong tracks.
+-   The reference set used to normalize distances (Mutual Proximity) is now
+    the whole collection for libraries up to 8000 tracks, instead of a
+    sample of 1000. This removes the dependency on which tracks happen to
+    be sampled, at the cost of a slower one-off jukebox initialization.
+    Larger collections keep using a sample drawn from the entire collection.
+-   Jukebox initialization and playlist queries are substantially faster:
+    `add_tracks` is parallelized with OpenMP, `-p` accepts multiple seeds
+    (and `-p -` reads paths from stdin) so a burst of queries pays the
+    collection load once, unchanged collections load the jukebox in “lean”
+    mode (skipping the unused Mutual Proximity reference models), and
+    `-a`/`-r` with `-J` keep the on-disk jukebox state up to date so
+    subsequent `-p` calls never rebuild from scratch.
+-   A multi-stage `Dockerfile` builds and self-tests Musly on Debian 13
+    with FFmpeg 7.1, and runs a small decoder smoke test. The runtime
+    image keeps the previous container contract (SSH, `/collection` and
+    `/metadata` volumes).
+-   Collection files use a new format version. Existing `.musly`
+    collections and saved jukebox state from older builds are not
+    compatible — re-analyze the library with this release before
+    computing playlists or matrices.
+-   Self-tests cover silence and other failure modes, deterministic
+    similarity checks, and registration of all similarity methods
+    including *timbre2*.
+
+A longer analysis of the similarity pipeline is in
+`<musly/doc/similarity-pipeline-analysis.md>`.
+
 ### VERSION 0.2 (under development) ###
 Not released yet.
 
@@ -78,7 +141,23 @@ similarity measures visit <http://www.musly.org>.
 ## Installation ##
 
 Musly uses the CMake build system, and depends on Eigen 3 and ffmpeg or libav
-0.8 or above.
+0.8 or above (current FFmpeg 7.x is supported).
+
+### Docker ###
+
+To build a tested image from this source tree:
+
+```bash
+docker build -t musly:dev .
+```
+
+The image installs the `musly` client, runs the library self-test during
+the build, and exposes the same volumes and SSH entrypoint as earlier
+Musly containers (`/collection`, `/metadata`). Example:
+
+```bash
+docker run --rm musly:dev musly -i
+```
 
 ### Ubuntu prerequisites ###
 
@@ -147,10 +226,87 @@ The command line interface is able to:
   (see <musly/doc/MIREX-DistanceMatrix.md>)
 * Additionally the music similarity features can be ouput in text format
   to ease reuse of the features.
+* Maintain an existing collection: add further directories with `-a`,
+  remove tracks or directories with `-r`, and drop entries whose audio
+  file is gone with `-R -y`.
+* Compute playlists for several seeds in one run (`-p` may be repeated;
+  `-p -` reads paths from stdin).
   
 The command line tool is called "musly". Use "musly -h" to read about all
 available options. See <http://www.musly.org> for more information.
 
+### Evaluating similarity quality ###
+
+A reproducible harness under `eval/` compares methods (e.g. `timbre` vs
+`timbre2`) on FMA-small with an artist filter, ranking metrics, paired
+statistics, and a perturbation robustness set. See `eval/REPORT.md` for the
+protocol and decision rules. A different neighbor list alone is not treated
+as an improvement.
+
+### Tuning — what shipped and what was rejected ###
+
+Two tuning rounds are closed. Full numbers, trade-offs and the refuted
+hypotheses are in `eval/TUNING_RESULTS.md`; the round-1 experiment catalogue is
+`eval/TUNING.md`.
+
+**What shipped.** *timbre2* estimates its Gaussians with a Ledoit–Wolf shrinkage
+intensity of 0.15 rather than 0.10. On FMA-small that trades 0.60 pp of P@10
+(0.360 → 0.354, cluster-bootstrap CI [−0.76, −0.44] pp) for an improvement on
+**both** hubness statistics — skewness 2.75 → 2.48 and maximum k-occurrence
+95 → 82 — plus slightly better robustness to aggressive mp3 quantization
+(0.650 → 0.665). It was picked from a grid of eight configurations
+(λ ∈ {0.10, 0.15, 0.20, 0.25} × CSLS on/off) measured in a single run, and it is
+the only one that improved both hubness statistics while keeping P@10 inside the
+±1 pp neutrality band that was agreed before the run. Hubness is still worse
+than plain *timbre* (2.23 / 69); roughly half of the regression introduced by
+the delta features is recovered.
+
+**What was rejected.**
+
+| Experiment | Result |
+|---|---|
+| CSLS hub penalty inside Mutual Proximity | P@10 +0.37 pp (inside the neutrality band), hub max 95 → 70 but skewness 2.75 → 2.90, and `mp3_64k` robustness 0.650 → 0.620. A trade-off rather than a win, and its apparent perturbation advantage was an artifact of the old metric. Removed together with its second normalization path. |
+| Delta scaling ×0.5 | P@10 −0.63 pp, no effect on hubness — worse or neutral everywhere. The parameter was removed. |
+| Shrinkage λ ∈ {0.20, 0.25} | Both hubness statistics keep improving (down to 2.15 / 60) but P@10 falls 1.17–1.78 pp, well outside the neutrality band. |
+| λ=0.15 combined with CSLS | Lowest hub max of any acceptable arm (62) but skewness flat, i.e. CSLS cancels exactly the skewness gain λ provides. The two knobs reshape the same distribution instead of composing. |
+
+The most useful diagnostic result: scaling the delta dimensions down does
+nothing to hub skewness, while widening the covariance shrinkage does. **The
+hubness regression comes from the sharpness of the covariance estimate in the
+50-dimensional feature space, not from the delta dimensions themselves.**
+
+### If you resume tuning ###
+
+1. **Loudness is done; don't tune `target_rms`.** The weak `vol_p6` figure that
+   started round 1 was a metric artifact — the perturbation set put all eight
+   variants of a track in one collection, so siblings outranked the original
+   (90.5 % of `vol_p6` queries). Sibling exclusion is now the default in
+   `eval/score_perturbations.py`, and on the corrected metric volume robustness
+   is at ceiling. The one real bug behind it is fixed: `resampler::resample()`
+   hard-clipped every sample to [-1, 1], which distorted any above-full-scale
+   content — including the originals, which peak above 0 dBFS after mp3
+   decoding — before the scale-invariant RMS normalization could run. It now
+   attenuates uniformly by `1/peak`, and `musly -d` confirms a lossless +6 dB
+   copy yields features identical to the original. Note `ffmpeg -af
+   volumedetect` is the *wrong* tool to audit this: it caps `max_volume` at
+   0.0 dB and cannot see above-full-scale float. Use `astats`.
+2. **`rate16k` is the one real robustness failure left** (0.10–0.13 top-1 on the
+   corrected metric, for every configuration tried, and shrinkage does not move
+   it). It is resampling / feature extraction, not ranking, so do not attack it
+   from the scoring side. `mp3_64k` (0.67 for *timbre2*, 0.73 for *timbre*) is
+   second.
+3. **The perturbation suite no longer separates methods** (all arms within
+   ~1 pp), so treat it as a regression guard, not as a selection criterion.
+   Ranking plus both hubness statistics are what decide.
+4. **Keep `OMP_NUM_THREADS=1` for anything reproducible.** Parallel `-a` is not
+   deterministic: two 8-thread runs over the same 60 tracks produced different
+   collection files, while single-threaded runs were byte identical. Each thread
+   writes only its own slot, but they share the method instance and decoder
+   scratch buffers through `mj`. The harness already pins one thread.
+5. **Budget the run time.** A full FMA-small arm is ~70 min single-threaded
+   (31 min analysis, 16 min k=100 dump, 9 min AUC subsample, 13 min
+   perturbations); an arm that only changes query-time behaviour costs ~27 min
+   because `eval/clone_collection.py` reuses the stored features.
 
 ## Library ##
 

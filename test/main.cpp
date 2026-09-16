@@ -17,6 +17,7 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <string>
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -209,6 +210,62 @@ void test_findmin() {
     for (int i = 0; i < 5; i++) {
         REQUIRE( "findmin correct", min_values[i] == true_min_values[i] );
         REQUIRE( "findmin correct", min_ids[i] == true_min_idxs[i] );
+    }
+}
+
+
+bool valid_utf8(const std::string& s) {
+    size_t i = 0;
+    while (i < s.size()) {
+        unsigned char c = (unsigned char)s[i];
+        size_t extra;
+        if (c < 0x80) {
+            extra = 0;
+        } else if ((c & 0xE0) == 0xC0) {
+            extra = 1;
+        } else if ((c & 0xF0) == 0xE0) {
+            extra = 2;
+        } else if ((c & 0xF8) == 0xF0) {
+            extra = 3;
+        } else {
+            return false;
+        }
+        if (i + extra >= s.size() && extra > 0) {
+            return false;
+        }
+        for (size_t k = 1; k <= extra; k++) {
+            if ((((unsigned char)s[i + k]) & 0xC0) != 0x80) {
+                return false;
+            }
+        }
+        i += extra + 1;
+    }
+    return true;
+}
+
+
+void test_limit_string() {
+    std::cout << "Testing component \"limit_string\"..." << std::endl;
+
+    // Plain ASCII keeps the previous behaviour.
+    REQUIRE("shorter kept", limit_string("abcdef", 10) == "abcdef");
+    REQUIRE("exact fit kept", limit_string("abcdef", 6) == "abcdef");
+    REQUIRE("ascii truncated", limit_string("abcdefghij", 6) == "..ghij");
+    REQUIRE("maxsize 0", limit_string("abc", 0) == "");
+    REQUIRE("maxsize 1", limit_string("abc", 1) == ".");
+    REQUIRE("maxsize 2", limit_string("abc", 2) == "..");
+
+    // "ą" occupies two bytes: the limit counts characters, not bytes.
+    const std::string a = "\xc4\x85";
+    const std::string four = a + a + a + a;
+    REQUIRE("utf8 measured in characters", limit_string(four, 4) == four);
+    REQUIRE("utf8 cut on boundary", limit_string(four, 3) == ".." + a);
+
+    // Truncating at any limit must leave a decodable string.
+    const std::string path =
+            "/collection/Other/2019/03. marzec/zażółć gęślą jaźń/Pryda/Nito.mp3";
+    for (int n = 0; n <= (int)path.size() + 2; n++) {
+        REQUIRE("truncated path is valid utf8", valid_utf8(limit_string(path, n)));
     }
 }
 
@@ -485,22 +542,252 @@ void test_method(std::string method) {
 }
 
 
+void test_degenerate_and_quality(std::string method) {
+    std::cout << "Testing degenerate/quality cases for \"" << method << "\"..." << std::endl;
+    musly_jukebox* box = musly_jukebox_poweron(method.c_str(), NULL);
+    REQUIRE("poweron", box != NULL);
+
+    musly_track* track = musly_track_alloc(box);
+    const int len = 22050 * 5;
+    float* pcm = new float[len];
+
+    // Digital silence → analysis must fail (no NaN features).
+    std::fill(pcm, pcm + len, 0.0f);
+    REQUIRE("silence rejected", musly_track_analyze_pcm(box, pcm, len, track) != 0);
+
+    // Input shorter than FFT window → fail.
+    REQUIRE("too short rejected", musly_track_analyze_pcm(box, pcm, 100, track) != 0);
+
+    // Constant non-zero → may fail (rank-deficient) or succeed with finite values.
+    std::fill(pcm, pcm + len, 0.25f);
+    int const_ret = musly_track_analyze_pcm(box, pcm, len, track);
+    if (const_ret == 0) {
+        for (int i = 0; i < musly_track_size(box) / (int)sizeof(float); i++) {
+            REQUIRE("constant signal finite", std::isfinite(track[i]));
+        }
+    }
+
+    // Single tone should analyze successfully with finite features.
+    for (int i = 0; i < len; i++) {
+        pcm[i] = 0.5f * std::sin(2.0f * (float)M_PI * 440.0f * i / 22050.0f);
+    }
+    REQUIRE("tone analyzed", musly_track_analyze_pcm(box, pcm, len, track) == 0);
+    for (int i = 0; i < musly_track_size(box) / (int)sizeof(float); i++) {
+        REQUIRE("tone features finite", std::isfinite(track[i]));
+    }
+
+    // setmusicstyle with a single track must fail for MP-based methods.
+    bool uses_mp = (method == "timbre" || method == "timbre2");
+    if (uses_mp) {
+        REQUIRE("setmusicstyle(1) fails",
+                musly_jukebox_setmusicstyle(box, &track, 1) != 0);
+    }
+
+    // Deterministic music: two seeds → finite non-negative similarities; self = 0.
+    musly_track* tracks[8];
+    musly_trackid ids[8];
+    for (int i = 0; i < 8; i++) {
+        tracks[i] = musly_track_alloc(box);
+        generate_music(pcm, len, 1000 + i * 17);
+        REQUIRE("generated track analyzed",
+                musly_track_analyze_pcm(box, pcm, len, tracks[i]) == 0);
+    }
+    REQUIRE("setmusicstyle(8)", musly_jukebox_setmusicstyle(box, tracks, 8) == 0);
+    REQUIRE("addtracks", musly_jukebox_addtracks(box, tracks, ids, 8, true) == 0);
+
+    float sims[8];
+    REQUIRE("similarity", musly_jukebox_similarity(box, tracks[0], ids[0],
+            tracks, ids, 8, sims) == 0);
+    for (int i = 0; i < 8; i++) {
+        REQUIRE("sim finite", std::isfinite(sims[i]));
+        REQUIRE("sim non-negative", sims[i] >= 0.0f);
+    }
+    REQUIRE("self similarity zero", sims[0] == 0.0f);
+
+    // Regression: same seed twice → identical similarity vector.
+    float sims2[8];
+    REQUIRE("similarity again", musly_jukebox_similarity(box, tracks[0], ids[0],
+            tracks, ids, 8, sims2) == 0);
+    for (int i = 0; i < 8; i++) {
+        REQUIRE("deterministic similarity", sims[i] == sims2[i]);
+    }
+
+    for (int i = 0; i < 8; i++) {
+        musly_track_free(tracks[i]);
+    }
+    musly_track_free(track);
+    delete[] pcm;
+    musly_jukebox_poweroff(box);
+}
+
+
+void test_excerpt_focus(std::string method) {
+    // Only the timbre family restricts the analysis to the centered part;
+    // mandelellis is kept as the unmodified baseline.
+    if ((method != "timbre") && (method != "timbre2")) {
+        return;
+    }
+    std::cout << "Testing excerpt focus for \"" << method << "\"..." << std::endl;
+    musly_jukebox* box = musly_jukebox_poweron(method.c_str(), NULL);
+    REQUIRE("poweron", box != NULL);
+
+    // Both signals share an identical centered core and differ completely in
+    // the intro and outro. The core is slightly wider than the analyzed 60%
+    // so the comparison does not depend on rounding of the window bounds.
+    const int len = 22050 * 30;
+    const int core_len = (int)(len * 0.62f);
+    const int core_start = (len - core_len) / 2;
+
+    float* core = new float[core_len];
+    generate_music(core, core_len, 4711);
+
+    float* a = new float[len];
+    float* b = new float[len];
+    for (int i = 0; i < len; i++) {
+        float t = 2.0f * (float)M_PI * i / 22050.0f;
+        a[i] = 0.9f * std::sin(t * 55.0f);
+        b[i] = 0.9f * std::sin(t * 7000.0f);
+    }
+    std::copy(core, core + core_len, a + core_start);
+    std::copy(core, core + core_len, b + core_start);
+
+    musly_track* ta = musly_track_alloc(box);
+    musly_track* tb = musly_track_alloc(box);
+    REQUIRE("intro/outro variant a analyzed",
+            musly_track_analyze_pcm(box, a, len, ta) == 0);
+    REQUIRE("intro/outro variant b analyzed",
+            musly_track_analyze_pcm(box, b, len, tb) == 0);
+
+    const int dim = musly_track_size(box) / (int)sizeof(float);
+    bool same_model = true;
+    for (int i = 0; i < dim; i++) {
+        if (std::abs(ta[i] - tb[i]) > 1e-3f * (1.0f + std::abs(ta[i]))) {
+            same_model = false;
+        }
+    }
+    REQUIRE("intro and outro ignored", same_model);
+
+    musly_track_free(ta);
+    musly_track_free(tb);
+    delete[] a;
+    delete[] b;
+    delete[] core;
+    musly_jukebox_poweroff(box);
+}
+
+
+/** Level-1 similarity regression: synthetic families must retrieve each other.
+ * Four families of ten tracks share a dominant tone; within-family P@3 should
+ * stay high, distances must stay finite, and two runs must match exactly.
+ */
+void test_synthetic_family_retrieval(std::string method) {
+    if ((method != "timbre") && (method != "timbre2")) {
+        return;
+    }
+    std::cout << "Testing synthetic family retrieval for \"" << method
+            << "\"..." << std::endl;
+
+    const int n_families = 4;
+    const int per_family = 10;
+    const int n = n_families * per_family;
+    const int len = 22050 * 5;
+    const float family_hz[4] = {220.0f, 440.0f, 880.0f, 1320.0f};
+
+    musly_jukebox* box = musly_jukebox_poweron(method.c_str(), NULL);
+    REQUIRE("poweron", box != NULL);
+
+    musly_track* tracks[40];
+    musly_trackid ids[40];
+    float* pcm = new float[len];
+    for (int i = 0; i < n; i++) {
+        int fam = i / per_family;
+        int member = i % per_family;
+        float hz = family_hz[fam] * (1.0f + 0.01f * member);
+        float amp = 0.4f + 0.05f * member;
+        for (int s = 0; s < len; s++) {
+            float t = 2.0f * (float)M_PI * s / 22050.0f;
+            // Shared family partials plus a weak member-specific overtone.
+            pcm[s] = amp * std::sin(t * hz)
+                    + 0.15f * amp * std::sin(t * hz * 2.0f)
+                    + 0.05f * std::sin(t * (hz * 3.0f + 17.0f * member));
+        }
+        tracks[i] = musly_track_alloc(box);
+        REQUIRE("family track analyzed",
+                musly_track_analyze_pcm(box, pcm, len, tracks[i]) == 0);
+    }
+    REQUIRE("setmusicstyle", musly_jukebox_setmusicstyle(box, tracks, n) == 0);
+    REQUIRE("addtracks", musly_jukebox_addtracks(box, tracks, ids, n, true) == 0);
+
+    float sims[40];
+    float sims_repeat[40];
+    int within_hits = 0;
+    int queries = 0;
+    for (int q = 0; q < n; q++) {
+        REQUIRE("similarity", musly_jukebox_similarity(box, tracks[q], ids[q],
+                tracks, ids, n, sims) == 0);
+        REQUIRE("similarity repeat", musly_jukebox_similarity(box, tracks[q], ids[q],
+                tracks, ids, n, sims_repeat) == 0);
+        for (int j = 0; j < n; j++) {
+            REQUIRE("sim finite", std::isfinite(sims[j]));
+            REQUIRE("sim non-negative", sims[j] >= 0.0f);
+            REQUIRE("sim deterministic", sims[j] == sims_repeat[j]);
+        }
+        REQUIRE("self zero", sims[q] == 0.0f);
+
+        // Rank others by distance; count how many of top-3 share the family.
+        std::vector<std::pair<float, int> > order;
+        order.reserve(n - 1);
+        for (int j = 0; j < n; j++) {
+            if (j == q) {
+                continue;
+            }
+            order.push_back(std::make_pair(sims[j], j));
+        }
+        std::sort(order.begin(), order.end());
+        int fam = q / per_family;
+        int hits = 0;
+        for (int k = 0; k < 3 && k < (int)order.size(); k++) {
+            if (order[k].second / per_family == fam) {
+                hits++;
+            }
+        }
+        within_hits += hits;
+        queries++;
+    }
+    float p_at_3 = (float)within_hits / (float)(queries * 3);
+    REQUIRE("family P@3 above floor", p_at_3 >= 0.5f);
+
+    for (int i = 0; i < n; i++) {
+        musly_track_free(tracks[i]);
+    }
+    delete[] pcm;
+    musly_jukebox_poweroff(box);
+}
+
+
 int main() {
     musly_debug(1);  // set verbosity level to logERROR
 
     // Unit tests
-    std::cout << "Components to test: unordered_idpool,ordered_idpool,findmin" << std::endl;
+    std::cout << "Components to test: unordered_idpool,ordered_idpool,findmin,limit_string" << std::endl;
     test_unordered_idpool();
     test_ordered_idpool();
     test_findmin();
+    test_limit_string();
     std::cout << std::endl;
 
     // Tests of the full library
     std::cout << "Methods to test: " << musly_jukebox_listmethods() << std::endl;
     std::vector<std::string> methods = split(musly_jukebox_listmethods(), ',');
+    REQUIRE("timbre2 registered",
+            std::find(methods.begin(), methods.end(), "timbre2") != methods.end());
     for (int i = 0; i < (int)methods.size(); i++) {
         test_method(methods[i]);
+        test_degenerate_and_quality(methods[i]);
+        test_excerpt_focus(methods[i]);
+        test_synthetic_family_retrieval(methods[i]);
     }
 
     SUMMARY();
+    return FAILED ? 1 : 0;
 }

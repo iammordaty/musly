@@ -27,6 +27,7 @@ private:
     std::string action;
     std::string program_name;
     std::map<std::string, std::string> optionstr;
+    std::map<std::string, std::vector<std::string> > optionlist;
 
 public:
     programoptions(
@@ -46,6 +47,13 @@ public:
     std::string
     get_option_str(
             const std::string &option);
+
+    /** Returns every value given for a repeatable option, in command line
+     * order. Currently only '-a' may be repeated.
+     */
+    std::vector<std::string>
+    get_option_strs(
+            const std::string& option);
 
     int
     get_option_int(

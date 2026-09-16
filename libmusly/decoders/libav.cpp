@@ -1,6 +1,7 @@
 /**
  * Copyright 2013-2014, Dominik Schnitzer <dominik@schnitzer.at>
  *           2014-2016, Jan Schlueter <jan.schlueter@ofai.at>
+ *                2026, Musly maintainers
  *
  * This file is part of Musly, a program for high performance music
  * similarity computation: http://www.musly.org/.
@@ -15,6 +16,7 @@
 
 #include <inttypes.h>
 #include <stdint.h>
+#include <cstdarg>
 #include <vector>
 #include <algorithm>
 extern "C" {
@@ -49,6 +51,36 @@ extern "C" {
 #define AV_PACKET_UNREF av_free_packet
 #else
 #define AV_PACKET_UNREF av_packet_unref
+#endif
+
+// FFmpeg 5+: avcodec_find_decoder returns const AVCodec*
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(59, 0, 100)
+typedef const AVCodec MuslyAVCodec;
+#else
+typedef AVCodec MuslyAVCodec;
+#endif
+
+// FFmpeg 6+: av_init_packet removed; use heap-allocated packets
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 0, 100)
+#define MUSLY_USE_PACKET_ALLOC 1
+#else
+#define MUSLY_USE_PACKET_ALLOC 0
+#endif
+
+// FFmpeg 7+: channels / channel_layout replaced by ch_layout
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 0, 100)
+#define MUSLY_CHANNELS(ctx) ((ctx)->ch_layout.nb_channels)
+#define MUSLY_HAS_REQUEST_CHANNEL_LAYOUT 0
+#else
+#define MUSLY_CHANNELS(ctx) ((ctx)->channels)
+#define MUSLY_HAS_REQUEST_CHANNEL_LAYOUT 1
+#endif
+
+// send/receive API available from libavcodec 57.48.101
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(57, 48, 101)
+#define MUSLY_USE_SEND_RECEIVE 1
+#else
+#define MUSLY_USE_SEND_RECEIVE 0
 #endif
 
 namespace musly {
@@ -107,16 +139,22 @@ if (in_fmt == ifmt || in_fmt == ifmtp) {\
 
 void libav_log_callback(void *ptr, int level, const char *fmt, va_list vargs)
 {
+    (void)ptr;
     if (level <= av_log_get_level()) {
 #if __cplusplus > 199711L
-        int len = vsnprintf(NULL, 0, fmt, vargs);
+        va_list vargs_copy;
+        va_copy(vargs_copy, vargs);
+        int len = vsnprintf(NULL, 0, fmt, vargs_copy);
+        va_end(vargs_copy);
         // Note: len does not include the terminating '\0' character.
         // We intentionally make the buffer one character too short
         // to avoid including the end-of-line character of libav.
-        char *buf = new char[len];
-        vsnprintf(buf, len, fmt, vargs);
-        MINILOG(logTRACE) << "libav: " << buf;
-        delete[] buf;
+        if (len > 0) {
+            char *buf = new char[len];
+            vsnprintf(buf, len, fmt, vargs);
+            MINILOG(logTRACE) << "libav: " << buf;
+            delete[] buf;
+        }
 #else
         vfprintf(FileLogger::get_stream(), fmt, vargs);
 #endif
@@ -208,7 +246,7 @@ libav::decodeto_22050hz_mono_float(
     #endif
     #define AVCODEC_FREE_CONTEXT(x) avcodec_free_context(x)
 #endif
-    AVCodec *dec = avcodec_find_decoder(decx->codec_id);
+    MuslyAVCodec *dec = avcodec_find_decoder(decx->codec_id);
     if (!dec) {
         MINILOG(logERROR) << "Could not find codec.";
 
@@ -219,8 +257,12 @@ libav::decodeto_22050hz_mono_float(
 
     // open the decoder
     // (kindly ask for stereo downmix and floats, but not all decoders care)
+#if MUSLY_HAS_REQUEST_CHANNEL_LAYOUT
     decx->request_channel_layout = AV_CH_LAYOUT_STEREO_DOWNMIX;
+#endif
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(61, 0, 100)
     decx->request_sample_fmt = AV_SAMPLE_FMT_FLT;
+#endif
 #ifdef _OPENMP
     #pragma omp critical
 #endif
@@ -236,9 +278,9 @@ libav::decodeto_22050hz_mono_float(
     }
 
     // Currently only mono and stereo files are supported.
-    if ((decx->channels != 1) && (decx->channels != 2)) {
+    if ((MUSLY_CHANNELS(decx) != 1) && (MUSLY_CHANNELS(decx) != 2)) {
         MINILOG(logWARNING) << "Unsupported number of channels: "
-                << decx->channels;
+                << MUSLY_CHANNELS(decx);
 
         AVCODEC_FREE_CONTEXT(&decx);
         avformat_close_input(&fmtx);
@@ -256,15 +298,28 @@ libav::decodeto_22050hz_mono_float(
     }
 
     // allocate and initialize a packet
-    AVPacket pkt;
-    av_init_packet(&pkt);
-    pkt.data = NULL;
-    pkt.size = 0;
-    int got_frame = 0;
+#if MUSLY_USE_PACKET_ALLOC
+    AVPacket* pkt_ptr = av_packet_alloc();
+    if (!pkt_ptr) {
+        MINILOG(logWARNING) << "Could not allocate packet";
+        AV_FRAME_FREE(&frame);
+        AVCODEC_FREE_CONTEXT(&decx);
+        avformat_close_input(&fmtx);
+        return std::vector<float>(0);
+    }
+    AVPacket& pkt = *pkt_ptr;
+#else
+    AVPacket pkt_storage;
+    av_init_packet(&pkt_storage);
+    pkt_storage.data = NULL;
+    pkt_storage.size = 0;
+    AVPacket& pkt = pkt_storage;
+#endif
 
     // configuration
     const int input_stride = av_get_bytes_per_sample(decx->sample_fmt);
-    const int num_planes = av_sample_fmt_is_planar(decx->sample_fmt) ? decx->channels : 1;
+    const int num_planes = av_sample_fmt_is_planar(decx->sample_fmt)
+            ? MUSLY_CHANNELS(decx) : 1;
     const int output_stride = sizeof(float) * num_planes;
     int decode_samples;  // how many samples to decode; zero to decode all
 
@@ -295,9 +350,9 @@ libav::decodeto_22050hz_mono_float(
         // (Note: without AVSEEK_FLAG_BACKWARD, some MP3s cause libav to skip
         // to a position where it sees mono MP1 frames, causing a segmentation
         // fault when trying to access frame->data[i] for i > 0 further below)
-        if ((excerpt_start > 0) and (av_seek_frame(fmtx, audio_stream_idx,
-                    excerpt_start * st->time_base.den / st->time_base.num,
-                    AVSEEK_FLAG_BACKWARD || AVSEEK_FLAG_ANY) >= 0)) {
+        if ((excerpt_start > 0) && (av_seek_frame(fmtx, audio_stream_idx,
+                    (int64_t)(excerpt_start * st->time_base.den / st->time_base.num),
+                    AVSEEK_FLAG_BACKWARD | AVSEEK_FLAG_ANY) >= 0)) {
             // skipping went fine: decode only what's needed
             decode_samples = excerpt_length * decx->sample_rate;
             excerpt_start = 0;
@@ -334,130 +389,145 @@ libav::decodeto_22050hz_mono_float(
     // excerpt_start tells us up to how many seconds to cut from the beginning.
 
     // read packets
-    const int channels = decx->channels;
+    const int channels = MUSLY_CHANNELS(decx);
     const int sample_rate = decx->sample_rate;
     float* buffer = NULL;
     int buffersize = 0;
     std::vector<float> decoded_pcm;
     int subsequent_errors = 0;
     const int subsequent_errors_max = 20;
+
+    auto process_frame = [&]() -> bool {
+        int input_samples = frame->nb_samples * MUSLY_CHANNELS(decx);
+        if (input_samples > buffersize) {
+            delete[] buffer;
+            buffer = new float[input_samples];
+            buffersize = input_samples;
+        }
+
+        for (int i = 0; i < num_planes; i++) {
+            if (samples_tofloat(buffer + i, frame->data[i],
+                    output_stride, input_stride,
+                    decx->sample_fmt,
+                    input_samples / num_planes) < 0) {
+                MINILOG(logERROR) << "Strange sample format. Abort.";
+                return false;
+            }
+        }
+
+        if (MUSLY_CHANNELS(decx) == 2) {
+            for (int i = 0; i < frame->nb_samples; i++) {
+                buffer[i] = (buffer[i*2] + buffer[i*2+1]) / 2.0f;
+            }
+        }
+
+        decoded_pcm.insert(decoded_pcm.end(), buffer,
+                buffer + frame->nb_samples);
+        return true;
+    };
+
+    auto abort_decode = [&]() -> std::vector<float> {
+        AV_FRAME_FREE(&frame);
+        AV_PACKET_UNREF(&pkt);
+#if MUSLY_USE_PACKET_ALLOC
+        av_packet_free(&pkt_ptr);
+#endif
+        avformat_close_input(&fmtx);
+        delete[] buffer;
+        AVCODEC_FREE_CONTEXT(&decx);
+        return std::vector<float>(0);
+    };
+
     while ((decode_samples == 0) || ((int)decoded_pcm.size() < decode_samples))
     {
         // skip all frames that are not part of the audio stream, and spurious
         // frames possibly found after seeking (wrong channels / sample_rate)
         while (((avret = av_read_frame(fmtx, &pkt)) >= 0)
                && ((pkt.stream_index != audio_stream_idx) ||
-                   (decx->channels != channels) ||
+                   (MUSLY_CHANNELS(decx) != channels) ||
                    (decx->sample_rate != sample_rate)))
         {
             AV_PACKET_UNREF(&pkt);
             MINILOG(logTRACE) << "Skipping frame...";
         }
         if (avret < 0) {
-            // stop decoding if av_read_frame() failed
+            // stop reading; drain decoder below
             AV_PACKET_UNREF(&pkt);
             break;
         }
 
+#if MUSLY_USE_SEND_RECEIVE
+        avret = avcodec_send_packet(decx, &pkt);
+        AV_PACKET_UNREF(&pkt);
+        if (avret < 0 && avret != AVERROR(EAGAIN) && avret != AVERROR_EOF) {
+            MINILOG(logWARNING) << "Error sending an audio packet";
+            if (subsequent_errors < subsequent_errors_max) {
+                subsequent_errors++;
+                continue;
+            }
+            MINILOG(logERROR) << "Too many errors, aborting.";
+            return abort_decode();
+        }
+
+        while (true) {
+            AV_FRAME_UNREF(frame);
+            avret = avcodec_receive_frame(decx, frame);
+            if (avret == AVERROR(EAGAIN) || avret == AVERROR_EOF) {
+                break;
+            }
+            if (avret < 0) {
+                MINILOG(logWARNING) << "Error decoding an audio frame";
+                if (subsequent_errors < subsequent_errors_max) {
+                    subsequent_errors++;
+                    break;
+                }
+                MINILOG(logERROR) << "Too many errors, aborting.";
+                return abort_decode();
+            }
+            subsequent_errors = 0;
+            if (!process_frame()) {
+                return abort_decode();
+            }
+            if ((decode_samples != 0) &&
+                    ((int)decoded_pcm.size() >= decode_samples)) {
+                break;
+            }
+        }
+#else
         uint8_t* data = pkt.data;
         int size = pkt.size;
         while (pkt.size > 0) {
-
-            // try to decode a frame
             AV_FRAME_UNREF(frame);
 
             int len = 0;
-            got_frame = 0;
-#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(57, 48, 101)
+            int got_frame = 0;
             len = avcodec_decode_audio4(decx, frame, &got_frame, &pkt);
             if (len < 0) {
                 avret = AVERROR(EINVAL);
-            }
-#else
-            avret = avcodec_receive_frame(decx, frame);
-            if (avret == 0) {
-                got_frame = 1;
-            }
-            if (avret == AVERROR(EAGAIN)) {
+            } else {
                 avret = 0;
             }
-            if (avret == 0) {
-                avret = avcodec_send_packet(decx, &pkt);
-                if (avret == 0) {
-                    len = pkt.size;
-                } else if (avret == AVERROR(EAGAIN)) {
-                    avret = 0;
-                }
-            }
-#endif
+
             if (avret < 0) {
                 MINILOG(logWARNING) << "Error decoding an audio frame";
 
-                // allow some frames to fail
                 if (subsequent_errors < subsequent_errors_max) {
                     subsequent_errors++;
                     break;
                 }
 
-                // if too many frames failed decoding, abort
                 MINILOG(logERROR) << "Too many errors, aborting.";
-                AV_FRAME_FREE(&frame);
-                AV_PACKET_UNREF(&pkt);
-                avformat_close_input(&fmtx);
-                if (buffer) {
-                    delete[] buffer;
-                }
-                return std::vector<float>(0);
+                return abort_decode();
             } else {
                 subsequent_errors = 0;
             }
 
-            // if we got a frame
             if (got_frame) {
-                // do we need to increase the buffer size?
-                int input_samples = frame->nb_samples*decx->channels;
-                if (input_samples > buffersize) {
-                    if (buffer) {
-                        delete[] buffer;
-                    }
-                    buffer = new float[input_samples];
-                    buffersize = input_samples;
+                if (!process_frame()) {
+                    return abort_decode();
                 }
-
-                // convert samples to float
-                // If we have planar samples (num_planes > 1), the channels
-                // are stored in separate frame->data[i] arrays and we
-                // convert to interleaved samples on the way.
-                for (int i = 0; i < num_planes; i++) {
-                    if (samples_tofloat(buffer + i, frame->data[i],
-                            output_stride, input_stride,
-                            decx->sample_fmt,
-                            input_samples / num_planes) < 0) {
-                        MINILOG(logERROR) << "Strange sample format. Abort.";
-
-                        AV_FRAME_FREE(&frame);
-                        AV_PACKET_UNREF(&pkt);
-                        avformat_close_input(&fmtx);
-                        if (buffer) {
-                            delete[] buffer;
-                        }
-                        return decoded_pcm;
-                    }
-                }
-
-                // inplace downmix to mono, if required
-                if (decx->channels == 2) {
-                    for (int i = 0; i < frame->nb_samples; i++) {
-                        buffer[i] = (buffer[i*2] + buffer[i*2+1]) / 2.0f;
-                    }
-                }
-
-                // store raw pcm data
-                decoded_pcm.insert(decoded_pcm.end(), buffer,
-                        buffer+frame->nb_samples);
             }
 
-            // consume the packet
             pkt.data += len;
             pkt.size -= len;
         }
@@ -465,14 +535,35 @@ libav::decodeto_22050hz_mono_float(
         pkt.size = size;
 
         AV_PACKET_UNREF(&pkt);
+#endif
     }
+
+#if MUSLY_USE_SEND_RECEIVE
+    // Drain remaining frames buffered in the decoder.
+    avcodec_send_packet(decx, NULL);
+    while (true) {
+        AV_FRAME_UNREF(frame);
+        avret = avcodec_receive_frame(decx, frame);
+        if (avret == AVERROR(EAGAIN) || avret == AVERROR_EOF || avret < 0) {
+            break;
+        }
+        if (!process_frame()) {
+            return abort_decode();
+        }
+        if ((decode_samples != 0) &&
+                ((int)decoded_pcm.size() >= decode_samples)) {
+            break;
+        }
+    }
+#endif
+
     MINILOG(logTRACE) << "Decoding loop finished.";
 
     // cut out the requested excerpt if needed
     int skip_samples = 0;
     if (excerpt_start < 0) {
         // center excerpt, but start at -excerpt_start the latest
-        float file_length = decoded_pcm.size() / decx->sample_rate;
+        float file_length = (float)decoded_pcm.size() / (float)decx->sample_rate;
         if (file_length > excerpt_length) {
             // skip beginning as needed
             excerpt_start = std::min(-excerpt_start,
@@ -493,7 +584,7 @@ libav::decodeto_22050hz_mono_float(
         // skip beginning if needed
         if (excerpt_start > 0) {
             skip_samples = excerpt_start * decx->sample_rate;
-            int missed_samples = decode_samples - decoded_pcm.size();
+            int missed_samples = decode_samples - (int)decoded_pcm.size();
             skip_samples = std::max(0, skip_samples - missed_samples);
         }
     }
@@ -504,7 +595,8 @@ libav::decodeto_22050hz_mono_float(
         MINILOG(logTRACE) << "Resampling signal. input="
                 << decx->sample_rate << ", target=" << target_rate;
         resampler r(decx->sample_rate, target_rate);
-        pcm = r.resample(decoded_pcm.data() + skip_samples, decoded_pcm.size() - skip_samples);
+        pcm = r.resample(decoded_pcm.data() + skip_samples,
+                (int)decoded_pcm.size() - skip_samples);
         MINILOG(logTRACE) << "Resampling finished.";
     } else {
         pcm.resize(decoded_pcm.size() - skip_samples);
@@ -512,15 +604,19 @@ libav::decodeto_22050hz_mono_float(
     }
 
     // cleanup
-    if (buffer) {
-        delete[] buffer;
-    }
+    delete[] buffer;
     AV_FRAME_FREE(&frame);
+#if MUSLY_USE_PACKET_ALLOC
+    av_packet_free(&pkt_ptr);
+#endif
 #ifdef _OPENMP
     #pragma omp critical
 #endif
     {
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(61, 0, 100)
+    // avcodec_close is deprecated; still needed when AVCODEC_FREE_CONTEXT is a no-op
     avcodec_close(decx);
+#endif
     AVCODEC_FREE_CONTEXT(&decx);
     avformat_close_input(&fmtx);
     }

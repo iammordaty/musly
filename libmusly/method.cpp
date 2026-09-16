@@ -114,6 +114,14 @@ method::deserialize_metadata(
 }
 
 int
+method::deserialize_metadata_lean(
+        int expected_tracks,
+        musly_trackid /*max_seen*/) {
+    // Methods without a reference set have nothing to skip.
+    return expected_tracks;
+}
+
+int
 method::serialize_trackdata(
         unsigned char* buffer,
         int num_tracks,
